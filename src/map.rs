@@ -1,4 +1,4 @@
-use std::ops::Mul;
+use std::{fmt::format, ops::Mul};
 
 use dbsdk_rs::{db, field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex}};
 
@@ -21,13 +21,7 @@ impl BspMap {
         for i in 0..bsp_file.leaf_lump.leaves.len() {
             let leaf = &bsp_file.leaf_lump.leaves[i];
             if leaf.cluster != u16::MAX {
-                let cluster_idx = leaf.cluster as usize;
-                if cluster_idx < num_clusters {
-                    clusters[cluster_idx] = i;
-                }
-                else {
-                    db::log(format!("WARNING: Leaf cluster out of range (index: {}, num clusters: {})", cluster_idx, num_clusters).as_str());
-                }
+                clusters[leaf.cluster as usize] = i;
             }
         }
 
@@ -55,6 +49,7 @@ impl BspMap {
             }
             else {
                 self.vis.fill(false);
+                db::log("WARNING: New leaf has no visibility info (cluster = -1)");
             }
 
             // build geometry for visible clusters
@@ -63,9 +58,13 @@ impl BspMap {
             }
 
             let mut edges: Vec<Edge> = Vec::new();
+            let mut vis_count = 0;
+            let mut tri_count = 0;
 
             for i in 0..self.vis.len() {
                 if self.vis[i] {
+                    vis_count += 1;
+
                     let leaf = &self.file.leaf_lump.leaves[self.clusters[i]];
                     let start_face_idx = leaf.first_leaf_face as usize;
                     let end_face_idx = start_face_idx + (leaf.num_leaf_faces as usize);
@@ -74,7 +73,17 @@ impl BspMap {
                         let face_idx = self.file.leaf_face_lump.faces[leaf_face] as usize;
                         let face = &self.file.face_lump.faces[face_idx];
                         let tex_idx = face.texture_info as usize;
-                        let tex_info = &self.file.tex_info_lump.textures[tex_idx];
+                        let _tex_info = &self.file.tex_info_lump.textures[tex_idx];
+                        let plane = &self.file.plane_lump.planes[face.plane as usize];
+
+                        let normal = plane.normal;
+                        let col = Color32::new(
+                            ((normal.x * 0.5 + 0.5) * 255.0) as u8,
+                            ((normal.y * 0.5 + 0.5) * 255.0) as u8,
+                            ((normal.z * 0.5 + 0.5) * 255.0) as u8,
+                            255);
+
+                        //let col = Color32::new(255, 255, 255, 255);
 
                         let start_edge_idx = face.first_edge as usize;
                         let end_edge_idx = start_edge_idx + (face.num_edges as usize);
@@ -108,20 +117,24 @@ impl BspMap {
                             let pos_b = Vector4::new(pos_b.x, pos_b.y, pos_b.z, 1.0);
                             let pos_c = Vector4::new(pos_c.x, pos_c.y, pos_c.z, 1.0);
 
-                            let vtx_a = PackedVertex::new(pos_a, Vector2::zero(), Color32::new(255, 255, 255, 255), 
+                            let vtx_a = PackedVertex::new(pos_a, Vector2::zero(), col, 
                                 Color32::new(0, 0, 0, 0));
-                            let vtx_b = PackedVertex::new(pos_b, Vector2::zero(), Color32::new(255, 255, 255, 255), 
+                            let vtx_b = PackedVertex::new(pos_b, Vector2::zero(), col, 
                                 Color32::new(0, 0, 0, 0));
-                            let vtx_c = PackedVertex::new(pos_c, Vector2::zero(), Color32::new(255, 255, 255, 255), 
+                            let vtx_c = PackedVertex::new(pos_c, Vector2::zero(), col, 
                                 Color32::new(0, 0, 0, 0));
 
                             self.meshes[tex_idx].push(vtx_a);
                             self.meshes[tex_idx].push(vtx_b);
                             self.meshes[tex_idx].push(vtx_c);
+
+                            tri_count += 1;
                         }
                     }
                 }
             }
+
+            db::log(format!("Visible clusters: {} (triangles: {})", vis_count, tri_count).as_str());
         }
 
         // build view + projection matrix
@@ -143,7 +156,7 @@ impl BspMap {
         vdp::set_culling(true);
         vdp::bind_texture(None);
 
-        for m in &self.meshes {
+        for (_i, m) in self.meshes.iter().enumerate() {
             if m.len() > 0 {
                 geo_buff.clear();
                 geo_buff.extend_from_slice(m);

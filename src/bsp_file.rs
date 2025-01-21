@@ -1,7 +1,7 @@
 use std::io::Seek;
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use dbsdk_rs::math::Vector3;
+use dbsdk_rs::{db::log, math::Vector3};
 
 const BSP_MAGIC: u32 = 0x50534249;
 const BSP_VERSION: u32 = 38;
@@ -14,10 +14,10 @@ fn read_vec3f<R: ReadBytesExt>(reader: &mut R) -> Vector3 {
     Vector3::new(x, y, z)
 }
 
-fn read_vec3i<R: ReadBytesExt>(reader: &mut R) -> Vector3 {
-    let x = reader.read_i32::<LittleEndian>().unwrap() as f32;
-    let y = reader.read_i32::<LittleEndian>().unwrap() as f32;
-    let z = reader.read_i32::<LittleEndian>().unwrap() as f32;
+fn read_vec3s<R: ReadBytesExt>(reader: &mut R) -> Vector3 {
+    let x = reader.read_i16::<LittleEndian>().unwrap() as f32;
+    let y = reader.read_i16::<LittleEndian>().unwrap() as f32;
+    let z = reader.read_i16::<LittleEndian>().unwrap() as f32;
 
     Vector3::new(x, y, z)
 }
@@ -265,12 +265,14 @@ impl NodeLump {
         let num_nodes = (info.length / 28) as usize;
         let mut nodes: Vec<Node> = Vec::with_capacity(num_nodes);
 
+        log(format!("Num nodes in node lump: {}", num_nodes).as_str());
+
         for _ in 0..num_nodes {
             let plane = reader.read_u32::<LittleEndian>().unwrap();
             let front_child = reader.read_i32::<LittleEndian>().unwrap();
             let back_child = reader.read_i32::<LittleEndian>().unwrap();
-            let bbox_min = read_vec3i(reader);
-            let bbox_max = read_vec3i(reader);
+            let bbox_min = read_vec3s(reader);
+            let bbox_max = read_vec3s(reader);
             let first_face = reader.read_u16::<LittleEndian>().unwrap();
             let num_faces = reader.read_u16::<LittleEndian>().unwrap();
 
@@ -298,12 +300,14 @@ impl LeafLump {
         let num_leaves = (info.length / 28) as usize;
         let mut leaves: Vec<Leaf> = Vec::with_capacity(num_leaves);
 
+        log(format!("Num leaves in leaf lump: {}", num_leaves).as_str());
+
         for _ in 0..num_leaves {
             let brush_or = reader.read_u32::<LittleEndian>().unwrap();
             let cluster = reader.read_u16::<LittleEndian>().unwrap();
             let area = reader.read_u16::<LittleEndian>().unwrap();
-            let bbox_min = read_vec3i(reader);
-            let bbox_max = read_vec3i(reader);
+            let bbox_min = read_vec3s(reader);
+            let bbox_max = read_vec3s(reader);
             let first_leaf_face = reader.read_u16::<LittleEndian>().unwrap();
             let num_leaf_faces = reader.read_u16::<LittleEndian>().unwrap();
             let first_leaf_brush = reader.read_u16::<LittleEndian>().unwrap();
@@ -352,6 +356,8 @@ impl TexInfoLump {
 
         let num_textures = (info.length / 76) as usize;
         let mut textures: Vec<TexInfo> = Vec::with_capacity(num_textures);
+
+        log(format!("Num textures in tex info lump: {}", num_textures).as_str());
 
         for _ in 0..num_textures {
             let u_axis = read_vec3f(reader);
@@ -403,6 +409,8 @@ impl VisLump {
         let hdr_size = 4 + (num_clusters * 8);
 
         let mut clusters: Vec<VisCluster> = Vec::with_capacity(num_clusters);
+
+        log(format!("Num clusters in vis lump: {}", num_clusters).as_str());
 
         for _ in 0..num_clusters {
             let pvs = reader.read_u32::<LittleEndian>().unwrap();
