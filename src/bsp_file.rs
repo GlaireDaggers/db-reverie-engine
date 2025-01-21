@@ -1,139 +1,155 @@
 use std::io::Seek;
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use dbsdk_rs::math::Vector3;
 
 const BSP_MAGIC: u32 = 0x50534249;
 const BSP_VERSION: u32 = 38;
 
-pub struct Vec3f {
-    x: f32,
-    y: f32,
-    z: f32
+fn read_vec3f<R: ReadBytesExt>(reader: &mut R) -> Vector3 {
+    let x = reader.read_f32::<LittleEndian>().unwrap();
+    let y = reader.read_f32::<LittleEndian>().unwrap();
+    let z = reader.read_f32::<LittleEndian>().unwrap();
+
+    Vector3::new(x, y, z)
 }
 
-impl Vec3f {
-    pub fn read<R: ReadBytesExt>(reader: &mut R) -> Vec3f {
-        let x = reader.read_f32::<LittleEndian>().unwrap();
-        let y = reader.read_f32::<LittleEndian>().unwrap();
-        let z = reader.read_f32::<LittleEndian>().unwrap();
+fn read_vec3i<R: ReadBytesExt>(reader: &mut R) -> Vector3 {
+    let x = reader.read_i32::<LittleEndian>().unwrap() as f32;
+    let y = reader.read_i32::<LittleEndian>().unwrap() as f32;
+    let z = reader.read_i32::<LittleEndian>().unwrap() as f32;
 
-        Vec3f {
-            x, y, z
+    Vector3::new(x, y, z)
+}
+
+pub struct Color32 {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8
+}
+
+impl Color32 {
+    pub fn read24<R: ReadBytesExt>(reader: &mut R) -> Color32 {
+        let r = reader.read_u8().unwrap();
+        let g = reader.read_u8().unwrap();
+        let b = reader.read_u8().unwrap();
+
+        Color32 {
+            r,
+            g,
+            b,
+            a: 255
         }
     }
 }
 
-pub struct Vec3i {
-    x: i32,
-    y: i32,
-    z: i32
-}
-
-impl Vec3i {
-    pub fn read<R: ReadBytesExt>(reader: &mut R) -> Vec3i {
-        let x = reader.read_i32::<LittleEndian>().unwrap();
-        let y = reader.read_i32::<LittleEndian>().unwrap();
-        let z = reader.read_i32::<LittleEndian>().unwrap();
-
-        Vec3i {
-            x, y, z
-        }
-    }
-}
-
-struct BspLumpInfo {
+pub struct BspLumpInfo {
     offset: u32,
     length: u32,
 }
 
-struct Edge {
-    a: u16,
-    b: u16
+pub struct Edge {
+    pub a: u16,
+    pub b: u16
 }
 
-struct BspFace {
-    plane: u16,
-    plane_side: u16,
-    first_edge: u32,
-    num_edges: u16,
-    texture_info: u16,
-    lightmap_styles: [u8;4],
-    lightmap_offset: u32,
+pub struct BspFace {
+    pub plane: u16,
+    pub plane_side: u16,
+    pub first_edge: u32,
+    pub num_edges: u16,
+    pub texture_info: u16,
+    pub lightmap_styles: [u8;4],
+    pub lightmap_offset: u32,
 }
 
-struct Plane {
-    normal: Vec3f,
-    distance: f32,
-    plane_type: u32,
+pub struct Plane {
+    pub normal: Vector3,
+    pub distance: f32,
+    pub plane_type: u32,
 }
 
-struct Node {
-    plane: u32,
-    front_child: i32,
-    back_child: i32,
-    bbox_min: Vec3i,
-    bbox_max: Vec3i,
-    first_face: u16,
-    num_faces: u16,
+pub struct Node {
+    pub plane: u32,
+    pub front_child: i32,
+    pub back_child: i32,
+    pub bbox_min: Vector3,
+    pub bbox_max: Vector3,
+    pub first_face: u16,
+    pub num_faces: u16,
 }
 
-struct Leaf {
-    brush_or: u32,
-    cluster: u16,
-    area: u16,
-    bbox_min: Vec3i,
-    bbox_max: Vec3i,
-    first_leaf_face: u16,
-    num_leaf_faces: u16,
-    first_leaf_brush: u16,
-    num_leaf_brushes: u16
+pub struct Leaf {
+    pub brush_or: u32,
+    pub cluster: u16,
+    pub area: u16,
+    pub bbox_min: Vector3,
+    pub bbox_max: Vector3,
+    pub first_leaf_face: u16,
+    pub num_leaf_faces: u16,
+    pub first_leaf_brush: u16,
+    pub num_leaf_brushes: u16
 }
 
-struct TexInfo {
-    u_axis: Vec3f,
-    u_offset: f32,
-    v_axis: Vec3f,
-    v_offset: f32,
-    flags: u32,
-    value: u32,
-    texture_name: [u8; 32],
-    next_texinfo: u32,
+pub struct TexInfo {
+    pub u_axis: Vector3,
+    pub u_offset: f32,
+    pub v_axis: Vector3,
+    pub v_offset: f32,
+    pub flags: u32,
+    pub value: u32,
+    pub texture_name: String,
+    pub next_texinfo: u32,
 }
 
-struct VertexLump {
-    vertices: Vec<Vec3f>
+pub struct VisCluster {
+    pub vis_offset: usize
 }
 
-struct EdgeLump {
-    edges: Vec<Edge>
+pub struct VertexLump {
+    pub vertices: Vec<Vector3>
 }
 
-struct FaceLump {
-    faces: Vec<BspFace>
+pub struct EdgeLump {
+    pub edges: Vec<Edge>
 }
 
-struct FaceEdgeLump {
-    edges: Vec<u32>
+pub struct FaceLump {
+    pub faces: Vec<BspFace>
 }
 
-struct PlaneLump {
-    planes: Vec<Plane>
+pub struct FaceEdgeLump {
+    pub edges: Vec<u32>
 }
 
-struct NodeLump {
-    nodes: Vec<Node>
+pub struct PlaneLump {
+    pub planes: Vec<Plane>
 }
 
-struct LeafLump {
-    leaves: Vec<Leaf>
+pub struct NodeLump {
+    pub nodes: Vec<Node>
 }
 
-struct LeafFaceLump {
-    faces: Vec<u16>
+pub struct LeafLump {
+    pub leaves: Vec<Leaf>
 }
 
-struct TexInfoLump {
-    textures: Vec<TexInfo>
+pub struct LeafFaceLump {
+    pub faces: Vec<u16>
+}
+
+pub struct TexInfoLump {
+    pub textures: Vec<TexInfo>
+}
+
+pub struct VisLump {
+    pub clusters: Vec<VisCluster>,
+    pub vis_buffer: Vec<u8>,
+}
+
+pub struct LightmapLump {
+    pub lm: Vec<Color32>
 }
 
 impl VertexLump {
@@ -141,10 +157,10 @@ impl VertexLump {
         reader.seek(std::io::SeekFrom::Start(info.offset as u64)).unwrap();
 
         let num_vertices = (info.length / 12) as usize;
-        let mut vertices: Vec<Vec3f> = Vec::with_capacity(num_vertices);
+        let mut vertices: Vec<Vector3> = Vec::with_capacity(num_vertices);
 
         for _ in 0..num_vertices {
-            vertices.push(Vec3f::read(reader));
+            vertices.push(read_vec3f(reader));
         }
 
         VertexLump {
@@ -229,7 +245,7 @@ impl PlaneLump {
         let mut planes: Vec<Plane> = Vec::with_capacity(num_planes);
 
         for _ in 0..num_planes {
-            let normal = Vec3f::read(reader);
+            let normal = read_vec3f(reader);
             let distance = reader.read_f32::<LittleEndian>().unwrap();
             let plane_type = reader.read_u32::<LittleEndian>().unwrap();
             planes.push(Plane { normal, distance, plane_type });
@@ -252,8 +268,8 @@ impl NodeLump {
             let plane = reader.read_u32::<LittleEndian>().unwrap();
             let front_child = reader.read_i32::<LittleEndian>().unwrap();
             let back_child = reader.read_i32::<LittleEndian>().unwrap();
-            let bbox_min = Vec3i::read(reader);
-            let bbox_max = Vec3i::read(reader);
+            let bbox_min = read_vec3i(reader);
+            let bbox_max = read_vec3i(reader);
             let first_face = reader.read_u16::<LittleEndian>().unwrap();
             let num_faces = reader.read_u16::<LittleEndian>().unwrap();
 
@@ -285,8 +301,8 @@ impl LeafLump {
             let brush_or = reader.read_u32::<LittleEndian>().unwrap();
             let cluster = reader.read_u16::<LittleEndian>().unwrap();
             let area = reader.read_u16::<LittleEndian>().unwrap();
-            let bbox_min = Vec3i::read(reader);
-            let bbox_max = Vec3i::read(reader);
+            let bbox_min = read_vec3i(reader);
+            let bbox_max = read_vec3i(reader);
             let first_leaf_face = reader.read_u16::<LittleEndian>().unwrap();
             let num_leaf_faces = reader.read_u16::<LittleEndian>().unwrap();
             let first_leaf_brush = reader.read_u16::<LittleEndian>().unwrap();
@@ -333,14 +349,14 @@ impl TexInfoLump {
     pub fn new<R: Seek + ReadBytesExt>(reader: &mut R, info: &BspLumpInfo) -> TexInfoLump {
         reader.seek(std::io::SeekFrom::Start(info.offset as u64)).unwrap();
 
-        let num_textures = (info.length / 2) as usize;
+        let num_textures = (info.length / 76) as usize;
         let mut textures: Vec<TexInfo> = Vec::with_capacity(num_textures);
 
         for _ in 0..num_textures {
-            let u_axis = Vec3f::read(reader);
+            let u_axis = read_vec3f(reader);
             let u_offset = reader.read_f32::<LittleEndian>().unwrap();
 
-            let v_axis = Vec3f::read(reader);
+            let v_axis = read_vec3f(reader);
             let v_offset = reader.read_f32::<LittleEndian>().unwrap();
 
             let flags = reader.read_u32::<LittleEndian>().unwrap();
@@ -349,6 +365,15 @@ impl TexInfoLump {
             let mut texture_name: [u8; 32] = [0; 32];
             reader.read_exact(&mut texture_name).unwrap();
 
+            let mut name_len = 32;
+            for i in 0..32 {
+                if texture_name[i] == 0 {
+                    name_len = i;
+                    break;
+                }
+            }
+
+            let texture_name = unsafe { std::str::from_utf8_unchecked(&texture_name[0..name_len]) }.to_owned();
             let next_texinfo = reader.read_u32::<LittleEndian>().unwrap();
 
             textures.push(TexInfo {
@@ -369,16 +394,91 @@ impl TexInfoLump {
     }
 }
 
+impl VisLump {
+    pub fn new<R: Seek + ReadBytesExt>(reader: &mut R, info: &BspLumpInfo) -> VisLump {
+        reader.seek(std::io::SeekFrom::Start(info.offset as u64)).unwrap();
+
+        let num_clusters = reader.read_u32::<LittleEndian>().unwrap() as usize;
+        let hdr_size = 4 + (num_clusters * 8);
+
+        let mut clusters: Vec<VisCluster> = Vec::with_capacity(num_clusters);
+
+        for _ in 0..num_clusters {
+            let pvs = reader.read_u32::<LittleEndian>().unwrap();
+            let _phs = reader.read_u32::<LittleEndian>().unwrap();
+
+            let offs = (pvs as usize) - hdr_size;
+
+            clusters.push(VisCluster {
+                vis_offset: offs
+            });
+        }
+
+        // read remainder of lump as byte array
+        let buf_len = (info.length as usize) - hdr_size;
+        let mut vis_buffer: Vec<u8> = vec![0;buf_len];
+        reader.read_exact(&mut vis_buffer).unwrap();
+
+        VisLump {
+            clusters,
+            vis_buffer
+        }
+    }
+
+    // Unpack vis info for a given cluster index
+    pub fn unpack_vis(self: &VisLump, cluster_index: usize, vis_info: &mut [bool]) {
+        let mut v = self.clusters[cluster_index].vis_offset;
+        let mut c = 0;
+
+        while c < self.clusters.len() {
+            if self.vis_buffer[v] == 0 {
+                v += 1;
+                c += 8 * (self.vis_buffer[v] as usize);
+            }
+            else {
+                for bit in 0..8 {
+                    let m = 1 << bit;
+                    if (self.vis_buffer[v] & m) != 0 {
+                        vis_info[c] = true;
+                    }
+                    c += 1;
+                }
+            }
+
+            v += 1;
+        }
+    }
+}
+
+impl LightmapLump {
+    pub fn new<R: Seek + ReadBytesExt>(reader: &mut R, info: &BspLumpInfo) -> LightmapLump {
+        reader.seek(std::io::SeekFrom::Start(info.offset as u64)).unwrap();
+
+        let num_px = (info.length / 3) as usize;
+        let mut lm: Vec<Color32> = Vec::with_capacity(num_px);
+
+        for _ in 0..num_px {
+            lm.push(Color32::read24(reader));
+        }
+
+        LightmapLump {
+            lm
+        }
+    }
+}
+
 pub struct BspFile {
-    vertex_lump: VertexLump,
-    edge_lump: EdgeLump,
-    face_lump: FaceLump,
-    face_edge_lump: FaceEdgeLump,
-    plane_lump: PlaneLump,
-    node_lump: NodeLump,
-    leaf_lump: LeafLump,
-    leaf_face_lump: LeafFaceLump,
-    tex_info_lump: TexInfoLump
+    pub vertex_lump: VertexLump,
+    pub edge_lump: EdgeLump,
+    pub face_lump: FaceLump,
+    pub face_edge_lump: FaceEdgeLump,
+    pub plane_lump: PlaneLump,
+    pub node_lump: NodeLump,
+    pub leaf_lump: LeafLump,
+    pub leaf_face_lump: LeafFaceLump,
+    pub tex_info_lump: TexInfoLump,
+    pub vis_lump: VisLump,
+    pub lm_lump: LightmapLump,
 }
 
 impl BspFile {
@@ -406,9 +506,11 @@ impl BspFile {
         // read lumps
         let plane_lump = PlaneLump::new(reader, &bsp_lumps[1]);
         let vertex_lump = VertexLump::new(reader, &bsp_lumps[2]);
+        let vis_lump = VisLump::new(reader, &bsp_lumps[3]);
         let node_lump = NodeLump::new(reader, &bsp_lumps[4]);
         let tex_info_lump = TexInfoLump::new(reader, &bsp_lumps[5]);
         let face_lump = FaceLump::new(reader, &bsp_lumps[6]);
+        let lm_lump = LightmapLump::new(reader, &bsp_lumps[7]);
         let leaf_lump = LeafLump::new(reader, &bsp_lumps[8]);
         let leaf_face_lump = LeafFaceLump::new(reader, &bsp_lumps[9]);
         let edge_lump = EdgeLump::new(reader, &bsp_lumps[11]);
@@ -423,7 +525,9 @@ impl BspFile {
             node_lump,
             leaf_lump,
             leaf_face_lump,
-            tex_info_lump
+            tex_info_lump,
+            vis_lump,
+            lm_lump
         }
     }
 }
