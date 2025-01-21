@@ -49,6 +49,7 @@ pub struct BspLumpInfo {
     length: u32,
 }
 
+#[derive(Clone, Copy)]
 pub struct Edge {
     pub a: u16,
     pub b: u16
@@ -120,7 +121,7 @@ pub struct FaceLump {
 }
 
 pub struct FaceEdgeLump {
-    pub edges: Vec<u32>
+    pub edges: Vec<i32>
 }
 
 pub struct PlaneLump {
@@ -225,10 +226,10 @@ impl FaceEdgeLump {
         reader.seek(std::io::SeekFrom::Start(info.offset as u64)).unwrap();
 
         let num_edges = (info.length / 4) as usize;
-        let mut edges: Vec<u32> = Vec::with_capacity(num_edges);
+        let mut edges: Vec<i32> = Vec::with_capacity(num_edges);
 
         for _ in 0..num_edges {
-            edges.push(reader.read_u32::<LittleEndian>().unwrap());
+            edges.push(reader.read_i32::<LittleEndian>().unwrap());
         }
 
         FaceEdgeLump {
