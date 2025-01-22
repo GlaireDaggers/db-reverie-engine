@@ -1,4 +1,4 @@
-use std::io::Seek;
+use std::{io::Seek, path::Path};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use dbsdk_rs::{db::log, math::Vector3};
@@ -20,6 +20,16 @@ fn read_vec3s<R: ReadBytesExt>(reader: &mut R) -> Vector3 {
     let z = reader.read_i16::<LittleEndian>().unwrap() as f32;
 
     Vector3::new(x, y, z)
+}
+
+#[derive(Debug)]
+pub enum TextureType {
+    Default,
+    Liquid,
+    Sky,
+    Skip,
+    Fence,
+    Clip,
 }
 
 pub struct Color32 {
@@ -102,6 +112,7 @@ pub struct TexInfo {
     pub value: u32,
     pub texture_name: String,
     pub next_texinfo: u32,
+    pub tex_type: TextureType,
 }
 
 pub struct VisCluster {
@@ -383,6 +394,26 @@ impl TexInfoLump {
             let texture_name = unsafe { std::str::from_utf8_unchecked(&texture_name[0..name_len]) }.to_owned();
             let next_texinfo = reader.read_u32::<LittleEndian>().unwrap();
 
+            let mut tex_type = TextureType::Default;
+            let tex_path = Path::new(texture_name.as_str());
+            let tex_name = tex_path.file_name().unwrap().to_str().unwrap();
+
+            if tex_name.contains("sky") {
+                tex_type = TextureType::Sky;
+            }
+            else if tex_name == "clip" {
+                tex_type = TextureType::Clip;
+            }
+            else if tex_name.ends_with("skip") {
+                tex_type = TextureType::Skip;
+            }
+            else if tex_name.contains("water") || tex_name.contains("wter") || tex_name.contains("slime") {
+                tex_type = TextureType::Liquid;
+            }
+            else if tex_name.starts_with("{") {
+                tex_type = TextureType::Fence;
+            }
+
             textures.push(TexInfo {
                 u_axis,
                 u_offset,
@@ -391,7 +422,8 @@ impl TexInfoLump {
                 flags,
                 value,
                 texture_name,
-                next_texinfo
+                next_texinfo,
+                tex_type,
             });
         }
 

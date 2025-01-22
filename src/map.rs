@@ -1,35 +1,47 @@
-use std::{fmt::format, ops::Mul};
+use std::{fmt::format, ops::Mul, vec};
 
-use dbsdk_rs::{db, field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex}};
+use dbsdk_rs::{db::{self, log}, field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex}};
 
-use crate::bsp_file::{BspFile, Edge};
+use crate::bsp_file::{BspFile, Edge, TextureType};
 
 pub struct BspMap {
     file: BspFile,
     vis: Vec<bool>,
     prev_leaf: i32,
     meshes: Vec<Vec<PackedVertex>>,
-    clusters: Vec<usize>,
+    visible_leaves: Vec<bool>,
+}
+
+fn coord_space_transform() -> Matrix4x4 {
+    // Quake coordinate system:
+    // +X is right
+    // +Y is towards viewer
+    // +Z is up
+
+    // DreamBox coordinate system:
+    // +X is right
+    // +Y is up
+    // +Z is towards viewer
+
+    Matrix4x4 {m: [
+        [ 1.0,  0.0, 0.0, 0.0],
+        [ 0.0,  0.0, 1.0, 0.0],
+        [ 0.0,  1.0, 0.0, 0.0],
+        [ 0.0,  0.0, 0.0, 1.0]
+    ]}
 }
 
 impl BspMap {
     pub fn new(bsp_file: BspFile) -> BspMap {
         let num_clusters = bsp_file.vis_lump.clusters.len();
+        let num_leaves = bsp_file.leaf_lump.leaves.len();
         let num_textures = bsp_file.tex_info_lump.textures.len();
-
-        let mut clusters: Vec<usize> = vec![0;num_clusters];
-        for i in 0..bsp_file.leaf_lump.leaves.len() {
-            let leaf = &bsp_file.leaf_lump.leaves[i];
-            if leaf.cluster != u16::MAX {
-                clusters[leaf.cluster as usize] = i;
-            }
-        }
 
         BspMap {
             file: bsp_file,
             vis: vec![false;num_clusters],
+            visible_leaves: vec![false;num_leaves],
             meshes: vec![Vec::new();num_textures],
-            clusters: clusters,
             prev_leaf: -1,
         }
     }
@@ -39,49 +51,57 @@ impl BspMap {
 
         // if camera enters a new cluster, unpack new cluster's visibility info & build geometry
         if leaf_index != self.prev_leaf {
-            db::log(format!("Entered leaf: {}", leaf_index).as_str());
-            
             self.prev_leaf = leaf_index;
             let leaf = &self.file.leaf_lump.leaves[leaf_index as usize];
             
+            self.vis.fill(false);
             if leaf.cluster != u16::MAX {
                 self.file.vis_lump.unpack_vis(leaf.cluster as usize, &mut self.vis);
             }
-            else {
-                self.vis.fill(false);
-                db::log("WARNING: New leaf has no visibility info (cluster = -1)");
+
+            // mark visible leaves
+            for i in 0..self.visible_leaves.len() {
+                let leaf = &self.file.leaf_lump.leaves[i];
+                self.visible_leaves[i] = leaf.cluster != u16::MAX && self.vis[leaf.cluster as usize];
             }
 
-            // build geometry for visible clusters
+            // build geometry for visible leaves
             for m in &mut self.meshes {
                 m.clear();
             }
 
             let mut edges: Vec<Edge> = Vec::new();
-            let mut vis_count = 0;
-            let mut tri_count = 0;
 
-            for i in 0..self.vis.len() {
-                if self.vis[i] {
-                    vis_count += 1;
-
-                    let leaf = &self.file.leaf_lump.leaves[self.clusters[i]];
+            for i in 0..self.visible_leaves.len() {
+                if self.visible_leaves[i] {
+                    let leaf = &self.file.leaf_lump.leaves[i];
                     let start_face_idx = leaf.first_leaf_face as usize;
-                    let end_face_idx = start_face_idx + (leaf.num_leaf_faces as usize);
+                    let end_face_idx: usize = start_face_idx + (leaf.num_leaf_faces as usize);
 
                     for leaf_face in start_face_idx..end_face_idx {
                         let face_idx = self.file.leaf_face_lump.faces[leaf_face] as usize;
                         let face = &self.file.face_lump.faces[face_idx];
                         let tex_idx = face.texture_info as usize;
-                        let _tex_info = &self.file.tex_info_lump.textures[tex_idx];
+                        let tex_info = &self.file.tex_info_lump.textures[tex_idx];
                         let plane = &self.file.plane_lump.planes[face.plane as usize];
+
+                        let skip = match tex_info.tex_type {
+                            TextureType::Sky => true,
+                            TextureType::Skip => true,
+                            // TextureType::Clip => true, // ???
+                            _ => false
+                        };
+
+                        if skip {
+                            continue;
+                        }
 
                         let normal = plane.normal;
                         let col = Color32::new(
                             ((normal.x * 0.5 + 0.5) * 255.0) as u8,
                             ((normal.y * 0.5 + 0.5) * 255.0) as u8,
                             ((normal.z * 0.5 + 0.5) * 255.0) as u8,
-                            255);
+                            128);
 
                         //let col = Color32::new(255, 255, 255, 255);
 
@@ -91,15 +111,15 @@ impl BspMap {
                         edges.clear();
                         for face_edge in start_edge_idx..end_edge_idx {
                             let edge_idx = self.file.face_edge_lump.edges[face_edge];
+                            let reverse = edge_idx < 0;
 
-                            if edge_idx >= 0 {
-                                let edge = self.file.edge_lump.edges[edge_idx as usize];
-                                edges.push(edge);
+                            let edge = self.file.edge_lump.edges[edge_idx.abs() as usize];
+
+                            if reverse {
+                                edges.push(Edge{ a: edge.b, b: edge.a });
                             }
                             else {
-                                let edge_idx = -edge_idx;
-                                let edge = self.file.edge_lump.edges[edge_idx as usize];
-                                edges.push(Edge{ a: edge.b, b: edge.a });
+                                edges.push(edge);
                             }
                         }
 
@@ -127,36 +147,43 @@ impl BspMap {
                             self.meshes[tex_idx].push(vtx_a);
                             self.meshes[tex_idx].push(vtx_b);
                             self.meshes[tex_idx].push(vtx_c);
-
-                            tri_count += 1;
                         }
                     }
                 }
             }
-
-            db::log(format!("Visible clusters: {} (triangles: {})", vis_count, tri_count).as_str());
         }
 
         // build view + projection matrix
-        let m = Matrix4x4::translation((*position).mul(-1.0));
-        Matrix4x4::load_simd(&m);
-        let mut r = *rotation; r.invert();
-        let m = Matrix4x4::rotation(r);
-        Matrix4x4::mul_simd(&m);
+        Matrix4x4::load_identity_simd();
+        Matrix4x4::mul_simd(&Matrix4x4::translation((*position).mul(-1.0)));
+        Matrix4x4::mul_simd(&Matrix4x4::rotation({let mut r = *rotation; r.invert(); r}));
+        Matrix4x4::mul_simd(&coord_space_transform());
         Matrix4x4::mul_simd(camera_proj);
 
         let mut geo_buff: Vec<PackedVertex> = Vec::with_capacity(1024);
 
         // set up render state
-        vdp::blend_equation(vdp::BlendEquation::Add);
-        vdp::blend_func(vdp::BlendFactor::One, vdp::BlendFactor::Zero);
-        vdp::depth_write(true);
         vdp::depth_func(vdp::Compare::LessOrEqual);
-        vdp::set_winding(vdp::WindingOrder::Clockwise);
+        vdp::set_winding(vdp::WindingOrder::CounterClockwise);
         vdp::set_culling(true);
         vdp::bind_texture(None);
 
-        for (_i, m) in self.meshes.iter().enumerate() {
+        for (i, m) in self.meshes.iter().enumerate() {
+            let tex_info = &self.file.tex_info_lump.textures[i];
+
+            match tex_info.tex_type {
+                TextureType::Liquid => {
+                    vdp::blend_equation(vdp::BlendEquation::Add);
+                    vdp::blend_func(vdp::BlendFactor::SrcAlpha, vdp::BlendFactor::OneMinusSrcAlpha);
+                    vdp::depth_write(false);
+                }
+                _ => {
+                    vdp::blend_equation(vdp::BlendEquation::Add);
+                    vdp::blend_func(vdp::BlendFactor::One, vdp::BlendFactor::Zero);
+                    vdp::depth_write(true);
+                }
+            }
+
             if m.len() > 0 {
                 geo_buff.clear();
                 geo_buff.extend_from_slice(m);
