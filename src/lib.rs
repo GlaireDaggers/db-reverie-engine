@@ -1,6 +1,7 @@
 extern crate dbsdk_rs;
 extern crate byteorder;
 extern crate lazy_static;
+extern crate ktx;
 
 use std::{ops::{Add, Mul}, sync::Mutex};
 
@@ -11,6 +12,7 @@ use dbsdk_rs::{db, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::{
 
 mod bsp_file;
 mod map;
+mod asset_loader;
 
 lazy_static! {
     static ref GAME_STATE: Mutex<GameState> = Mutex::new(GameState::new());

@@ -30,6 +30,7 @@ pub enum TextureType {
     Skip,
     Fence,
     Clip,
+    Trigger,
 }
 
 pub struct Color32 {
@@ -404,10 +405,13 @@ impl TexInfoLump {
             else if tex_name == "clip" {
                 tex_type = TextureType::Clip;
             }
+            else if tex_name == "trigger" {
+                tex_type = TextureType::Trigger;
+            }
             else if tex_name.ends_with("skip") {
                 tex_type = TextureType::Skip;
             }
-            else if tex_name.contains("water") || tex_name.contains("wter") || tex_name.contains("slime") {
+            else if tex_name.contains("water") || tex_name.contains("slime") {
                 tex_type = TextureType::Liquid;
             }
             else if tex_name.starts_with("{") {

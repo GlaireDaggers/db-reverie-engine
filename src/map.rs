@@ -1,8 +1,8 @@
 use std::{fmt::format, ops::Mul, vec};
 
-use dbsdk_rs::{db::{self, log}, field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex}};
+use dbsdk_rs::{db::{self, log}, field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Texture}};
 
-use crate::bsp_file::{BspFile, Edge, TextureType};
+use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, TextureType}};
 
 pub struct BspMap {
     file: BspFile,
@@ -10,6 +10,9 @@ pub struct BspMap {
     prev_leaf: i32,
     meshes: Vec<Vec<PackedVertex>>,
     visible_leaves: Vec<bool>,
+    loaded_textures: Vec<Option<Texture>>,
+    tex_ids: Vec<usize>,
+    err_tex: Texture,
 }
 
 fn coord_space_transform() -> Matrix4x4 {
@@ -37,12 +40,50 @@ impl BspMap {
         let num_leaves = bsp_file.leaf_lump.leaves.len();
         let num_textures = bsp_file.tex_info_lump.textures.len();
 
+        // load unique textures
+        let mut loaded_tex_names: Vec<&str> = Vec::new();
+        let mut loaded_textures: Vec<Option<Texture>> = Vec::new();
+        let mut tex_ids: Vec<usize> = Vec::new();
+
+        let err_tex = Texture::new(2, 2, false, vdp::TextureFormat::RGBA8888).unwrap();
+        err_tex.set_texture_data(0, &[
+            Color32::new(255, 0, 255, 255), Color32::new(0, 0, 0, 255),
+            Color32::new(0, 0, 0, 255), Color32::new(255, 0, 255, 255)
+        ]);
+
+        for tex_info in &bsp_file.tex_info_lump.textures {
+            match loaded_tex_names.iter().position(|&r| r == &tex_info.texture_name) {
+                Some(i) => {
+                    tex_ids.push(i);
+                }
+                None => {
+                    // new texture
+                    log(format!("Loading: {}", &tex_info.texture_name).as_str());
+
+                    let tex = match load_texture(format!("/cd/content/textures/{}.ktx", &tex_info.texture_name).as_str()) {
+                        Err(_) => {
+                            log(format!("Failed loading {}", &tex_info.texture_name).as_str());
+                            None
+                        },
+                        Ok(v) => Some(v)
+                    };
+                    let i = loaded_textures.len();
+                    loaded_tex_names.push(&tex_info.texture_name);
+                    loaded_textures.push(tex);
+                    tex_ids.push(i);
+                }
+            }
+        }
+
         BspMap {
             file: bsp_file,
             vis: vec![false;num_clusters],
             visible_leaves: vec![false;num_leaves],
             meshes: vec![Vec::new();num_textures],
             prev_leaf: -1,
+            tex_ids,
+            loaded_textures,
+            err_tex
         }
     }
 
@@ -88,6 +129,7 @@ impl BspMap {
                         let skip = match tex_info.tex_type {
                             TextureType::Sky => true,
                             TextureType::Skip => true,
+                            TextureType::Trigger => true,
                             // TextureType::Clip => true, // ???
                             _ => false
                         };
@@ -96,14 +138,7 @@ impl BspMap {
                             continue;
                         }
 
-                        let normal = plane.normal;
-                        let col = Color32::new(
-                            ((normal.x * 0.5 + 0.5) * 255.0) as u8,
-                            ((normal.y * 0.5 + 0.5) * 255.0) as u8,
-                            ((normal.z * 0.5 + 0.5) * 255.0) as u8,
-                            128);
-
-                        //let col = Color32::new(255, 255, 255, 255);
+                        let col = Color32::new(255, 255, 255, 255);
 
                         let start_edge_idx = face.first_edge as usize;
                         let end_edge_idx = start_edge_idx + (face.num_edges as usize);
@@ -133,15 +168,46 @@ impl BspMap {
                             let pos_b = self.file.vertex_lump.vertices[pos_b];
                             let pos_c = self.file.vertex_lump.vertices[pos_c];
 
+                            let mut tex_a = Vector2::new(
+                                Vector3::dot(&pos_a, &tex_info.u_axis) + tex_info.u_offset,
+                                Vector3::dot(&pos_a, &tex_info.v_axis) + tex_info.v_offset
+                            );
+
+                            let mut tex_b = Vector2::new(
+                                Vector3::dot(&pos_b, &tex_info.u_axis) + tex_info.u_offset,
+                                Vector3::dot(&pos_b, &tex_info.v_axis) + tex_info.v_offset
+                            );
+
+                            let mut tex_c = Vector2::new(
+                                Vector3::dot(&pos_c, &tex_info.u_axis) + tex_info.u_offset,
+                                Vector3::dot(&pos_c, &tex_info.v_axis) + tex_info.v_offset
+                            );
+
+                            let tex_id = self.tex_ids[tex_idx];
+                            match &self.loaded_textures[tex_id] {
+                                Some(v) => {
+                                    let sc = Vector2::new(1.0 / v.width as f32, 1.0 / v.height as f32);
+                                    tex_a = tex_a.mul(sc);
+                                    tex_b = tex_b.mul(sc);
+                                    tex_c = tex_c.mul(sc);
+                                }
+                                None => {
+                                    let sc = Vector2::new(1.0 / 64.0, 1.0 / 64.0);
+                                    tex_a = tex_a.mul(sc);
+                                    tex_b = tex_b.mul(sc);
+                                    tex_c = tex_c.mul(sc);
+                                }
+                            };
+
                             let pos_a = Vector4::new(pos_a.x, pos_a.y, pos_a.z, 1.0);
                             let pos_b = Vector4::new(pos_b.x, pos_b.y, pos_b.z, 1.0);
                             let pos_c = Vector4::new(pos_c.x, pos_c.y, pos_c.z, 1.0);
 
-                            let vtx_a = PackedVertex::new(pos_a, Vector2::zero(), col, 
+                            let vtx_a = PackedVertex::new(pos_a, tex_a, col, 
                                 Color32::new(0, 0, 0, 0));
-                            let vtx_b = PackedVertex::new(pos_b, Vector2::zero(), col, 
+                            let vtx_b = PackedVertex::new(pos_b, tex_b, col, 
                                 Color32::new(0, 0, 0, 0));
-                            let vtx_c = PackedVertex::new(pos_c, Vector2::zero(), col, 
+                            let vtx_c = PackedVertex::new(pos_c, tex_c, col, 
                                 Color32::new(0, 0, 0, 0));
 
                             self.meshes[tex_idx].push(vtx_a);
@@ -183,6 +249,18 @@ impl BspMap {
                     vdp::depth_write(true);
                 }
             }
+
+            let tex_id = self.tex_ids[i];
+            match &self.loaded_textures[tex_id] {
+                Some(v) => {
+                    vdp::bind_texture(Some(v));
+                    vdp::set_sample_params(vdp::TextureFilter::Linear, vdp::TextureWrap::Repeat, vdp::TextureWrap::Repeat);
+                }
+                None => {
+                    vdp::bind_texture(Some(&self.err_tex));
+                    vdp::set_sample_params(vdp::TextureFilter::Nearest, vdp::TextureWrap::Repeat, vdp::TextureWrap::Repeat);
+                }
+            };
 
             if m.len() > 0 {
                 geo_buff.clear();
