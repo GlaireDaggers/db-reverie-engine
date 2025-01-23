@@ -2,13 +2,13 @@ use std::{ops::Mul, vec};
 
 use dbsdk_rs::{db::log, field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture}};
 
-use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, TextureType, MASK_SOLID, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common};
+use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, TextureType, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common};
 
 const DEBUG_DRAW_LM: bool = false;
 const DIST_EPSILON: f32 = 0.03125;
 
 pub struct BspMap {
-    file: BspFile,
+    pub file: BspFile,
     vis: Vec<bool>,
     prev_leaf: i32,
     meshes: Vec<Vec<PackedVertex>>,
@@ -467,7 +467,7 @@ impl BspMap {
         return leaf.contents;
     }
 
-    fn linetrace_brush(self: &Self, brush_idx: usize, start: &Vector3, end: &Vector3) -> TraceResult {
+    fn trace_brush(self: &Self, brush_idx: usize, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>) -> TraceResult {
         let brush = &self.file.brush_lump.brushes[brush_idx];
 
         if brush.num_brush_sides == 0 {
@@ -485,7 +485,20 @@ impl BspMap {
             let side = &self.file.brush_side_lump.brush_sides[(brush.first_brush_side + i) as usize];
             let plane = &self.file.plane_lump.planes[side.plane as usize];
 
-            let dist = plane.distance;
+            let dist = match box_extents {
+                Some(v) => {
+                    let offs = Vector3::new(
+                        if plane.normal.x < 0.0 { v.x } else { -v.x },
+                        if plane.normal.y < 0.0 { v.y } else { -v.y },
+                        if plane.normal.z < 0.0 { v.z } else { -v.z }
+                    );
+
+                    plane.distance - Vector3::dot(&offs, &plane.normal)
+                }
+                None => {
+                    plane.distance
+                }
+            };
 
             let d1 = Vector3::dot(start, &plane.normal) - dist;
             let d2 = Vector3::dot(end, &plane.normal) - dist;
@@ -539,7 +552,7 @@ impl BspMap {
         return TraceResult::None;
     }
 
-    pub fn linetrace_leaf(self: &Self, leaf_index: usize, content_mask: u32, start: &Vector3, end: &Vector3) -> TraceResult {
+    pub fn trace_leaf(self: &Self, leaf_index: usize, content_mask: u32, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>) -> TraceResult {
         let leaf = &self.file.leaf_lump.leaves[leaf_index];
 
         if leaf.contents & content_mask == 0 {
@@ -552,7 +565,7 @@ impl BspMap {
         // linetrace all brushes in leaf
         for i in 0..leaf.num_leaf_brushes {
             let brush_idx = self.file.leaf_brush_lump.brushes[(leaf.first_leaf_brush + i) as usize];
-            let trace_result = self.linetrace_brush(brush_idx as usize, start, end);
+            let trace_result = self.trace_brush(brush_idx as usize, start, end, box_extents);
 
             match trace_result {
                 TraceResult::InSolid { end_solid } => {
@@ -572,9 +585,9 @@ impl BspMap {
         best_result
     }
 
-    pub fn recursive_linetrace(self: &Self, node_idx: i32, content_mask: u32, start: &Vector3, end: &Vector3) -> TraceResult {
+    pub fn recursive_trace(self: &Self, node_idx: i32, content_mask: u32, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>) -> TraceResult {
         if node_idx < 0 {
-            return self.linetrace_leaf((-node_idx - 1) as usize, content_mask, start, end);
+            return self.trace_leaf((-node_idx - 1) as usize, content_mask, start, end, box_extents);
         }
 
         let node = &self.file.node_lump.nodes[node_idx as usize];
@@ -583,15 +596,26 @@ impl BspMap {
         let t1 = Vector3::dot(&plane.normal, start) - plane.distance;
         let t2 = Vector3::dot(&plane.normal, end) - plane.distance;
 
-        if t1 >= 0.0 && t2 >= 0.0 {
-            return self.recursive_linetrace(node.front_child, content_mask, start, end);
+        let offset = match box_extents {
+            Some(v) => {
+                (v.x * plane.normal.x).abs() +
+                (v.y * plane.normal.y).abs() +
+                (v.z * plane.normal.z).abs()
+            },
+            None => {
+                0.0
+            }
+        };
+
+        if t1 >= offset && t2 >= offset {
+            return self.recursive_trace(node.front_child, content_mask, start, end, box_extents);
         }
-        else if t1 < 0.0 && t2 < 0.0 {
-            return self.recursive_linetrace(node.back_child, content_mask, start, end);
+        else if t1 < -offset && t2 < -offset {
+            return self.recursive_trace(node.back_child, content_mask, start, end, box_extents);
         }
 
-        let trace_front = self.recursive_linetrace(node.front_child, content_mask, start, end);
-        let trace_back = self.recursive_linetrace(node.back_child, content_mask, start, end);
+        let trace_front = self.recursive_trace(node.front_child, content_mask, start, end, box_extents);
+        let trace_back = self.recursive_trace(node.back_child, content_mask, start, end, box_extents);
 
         let d_front = match trace_front {
             TraceResult::InSolid { .. } => 0.0,

@@ -85,6 +85,47 @@ impl GameState {
         vdp::draw_geometry_packed(vdp::Topology::TriangleList, &quad);
     }
 
+    fn trace_move(self: &Self, start_pos: &Vector3, delta: &Vector3, box_extents: Option<&Vector3>) -> Vector3 {
+        let mut cur_pos = *start_pos;
+        let mut cur_delta = *delta;
+
+        for _ in 0..4 {
+            let new_pos = cur_pos + cur_delta;
+
+            match self.map.recursive_trace(0, MASK_SOLID, &cur_pos, &new_pos, box_extents) {
+                TraceResult::InSolid { .. } => {
+                    return new_pos;
+                },
+                TraceResult::Hit { t, plane_index, .. } => {
+                    let hit_plane = &self.map.file.plane_lump.planes[plane_index];
+                    let delta = new_pos - self.camera_position;
+    
+                    if delta.length_sq() > 0.0 {
+                        let desired_delta = delta.length();
+                        let actual_delta = (desired_delta * t) - 1.0;
+                        let delta_dir = delta.normalized();
+                        cur_pos = cur_pos + (delta_dir * actual_delta);
+    
+                        // project remainder along plane normal
+                        let leftover_delta = desired_delta - actual_delta;
+                        let slide_dir = delta_dir - (hit_plane.normal * Vector3::dot(&hit_plane.normal, &delta_dir));
+                        if slide_dir.length_sq() > 0.0 {
+                            cur_delta = slide_dir * leftover_delta;
+                        }
+                        else {
+                            return cur_pos;
+                        }
+                    }
+                },
+                TraceResult::None => {
+                    return new_pos;
+                }
+            };
+        }
+
+        return cur_pos;
+    }
+
     pub fn tick(self: &mut Self) {
         const DELTA: f32 = 1.0 / 60.0;
 
@@ -122,25 +163,10 @@ impl GameState {
         let fwd = Vector3::new(fwd.x, fwd.y, fwd.z);
         let right = Vector3::new(right.x, right.y, right.z);
 
-        let new_pos = self.camera_position + (ly * fwd * 100.0 * DELTA) + (lx * right * 100.0 * DELTA);
+        let camera_delta = (ly * fwd * 100.0 * DELTA) + (lx * right * 100.0 * DELTA);
+        let collision_box = Vector3::new(15.0, 15.0, 15.0);
 
-        match self.map.recursive_linetrace(0, MASK_SOLID, &self.camera_position, &new_pos) {
-            TraceResult::InSolid { .. } => {
-                self.camera_position = new_pos;
-            },
-            TraceResult::Hit { t, .. } => {
-                let delta = new_pos - self.camera_position;
-
-                if delta.length_sq() > 0.0 {
-                    let delta_mag = (delta.length() * t) - 0.1;
-                    let delta = delta.normalized() * delta_mag;
-                    self.camera_position = self.camera_position + delta;
-                }
-            },
-            TraceResult::None => {
-                self.camera_position = new_pos;
-            }
-        };
+        self.camera_position = self.trace_move(&self.camera_position, &camera_delta, Some(&collision_box));
 
         let cam_proj = Matrix4x4::projection_perspective(640.0 / 480.0, (60.0_f32).to_radians(), 10.0, 10000.0);
 
