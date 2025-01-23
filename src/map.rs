@@ -2,9 +2,10 @@ use std::{ops::Mul, vec};
 
 use dbsdk_rs::{db::log, field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture}};
 
-use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, TextureType, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common};
+use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, TextureType, MASK_SOLID, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common};
 
 const DEBUG_DRAW_LM: bool = false;
+const DIST_EPSILON: f32 = 0.03125;
 
 pub struct BspMap {
     file: BspFile,
@@ -21,6 +22,12 @@ pub struct BspMap {
     opaque_meshes: Vec<usize>,
     transp_meshes: Vec<usize>,
     warp_time: f32,
+}
+
+pub enum TraceResult {
+    None,
+    Hit { t: f32, plane_index: usize, side_index: usize, contents: u32 },
+    InSolid { end_solid: bool }
 }
 
 impl BspMap {
@@ -451,6 +458,158 @@ impl BspMap {
             vdp::set_culling(false);
             vdp::draw_geometry_packed(vdp::Topology::TriangleList, &quad);
         }
+    }
+
+    pub fn point_contents(self: &Self, point: &Vector3) -> u32 {
+        let node = self.calc_leaf_index(point);
+        let leaf = &self.file.leaf_lump.leaves[node as usize];
+
+        return leaf.contents;
+    }
+
+    fn linetrace_brush(self: &Self, brush_idx: usize, start: &Vector3, end: &Vector3) -> TraceResult {
+        let brush = &self.file.brush_lump.brushes[brush_idx];
+
+        if brush.num_brush_sides == 0 {
+            return TraceResult::None;
+        }
+
+        let mut hitplane = -1;
+        let mut hitside = -1;
+        let mut enterfrac = -1.0;
+        let mut exitfrac = 1.0;
+        let mut startout = false;
+        let mut getout = false;
+
+        for i in 0..brush.num_brush_sides {
+            let side = &self.file.brush_side_lump.brush_sides[(brush.first_brush_side + i) as usize];
+            let plane = &self.file.plane_lump.planes[side.plane as usize];
+
+            let dist = plane.distance;
+
+            let d1 = Vector3::dot(start, &plane.normal) - dist;
+            let d2 = Vector3::dot(end, &plane.normal) - dist;
+
+            if d2 > 0.0 {
+                getout = true;
+            }
+
+            if d1 > 0.0 {
+                startout = true;
+            }
+
+            if d1 > 0.0 && d2 >= d1 {
+                return TraceResult::None;
+            }
+
+            if d1 <= 0.0 && d2 <= 0.0 {
+                continue;
+            }
+
+            if d1 > d2 {
+                let f = (d1 - DIST_EPSILON) / (d1 - d2);
+                if f > enterfrac {
+                    enterfrac = f;
+                    hitplane = side.plane as i32;
+                    hitside = (brush.first_brush_side + i) as i32;
+                }
+            }
+            else {
+                let f = (d1 + DIST_EPSILON) / (d1 - d2);
+                if f < exitfrac {
+                    exitfrac = f;
+                }
+            }
+        }
+
+        if !startout {
+            return TraceResult::InSolid { end_solid: !getout };
+        }
+
+        if enterfrac < exitfrac {
+            if enterfrac > -1.0 {
+                if enterfrac < 0.0 {
+                    enterfrac = 0.0;
+                }
+
+                return TraceResult::Hit { t: enterfrac, plane_index: hitplane as usize, side_index: hitside as usize, contents: brush.contents };
+            }
+        }
+
+        return TraceResult::None;
+    }
+
+    pub fn linetrace_leaf(self: &Self, leaf_index: usize, content_mask: u32, start: &Vector3, end: &Vector3) -> TraceResult {
+        let leaf = &self.file.leaf_lump.leaves[leaf_index];
+
+        if leaf.contents & content_mask == 0 {
+            return TraceResult::None;
+        }
+
+        let mut best_result = TraceResult::None;
+        let mut best_dist = 1.0;
+
+        // linetrace all brushes in leaf
+        for i in 0..leaf.num_leaf_brushes {
+            let brush_idx = self.file.leaf_brush_lump.brushes[(leaf.first_leaf_brush + i) as usize];
+            let trace_result = self.linetrace_brush(brush_idx as usize, start, end);
+
+            match trace_result {
+                TraceResult::InSolid { end_solid } => {
+                    return TraceResult::InSolid { end_solid };
+                }
+                TraceResult::Hit { t, plane_index, side_index, contents } => {
+                    if t < best_dist {
+                        best_result = TraceResult::Hit { t, plane_index, side_index, contents };
+                        best_dist = t;
+                    }
+                }
+                _ => {
+                }
+            }
+        }
+
+        best_result
+    }
+
+    pub fn recursive_linetrace(self: &Self, node_idx: i32, content_mask: u32, start: &Vector3, end: &Vector3) -> TraceResult {
+        if node_idx < 0 {
+            return self.linetrace_leaf((-node_idx - 1) as usize, content_mask, start, end);
+        }
+
+        let node = &self.file.node_lump.nodes[node_idx as usize];
+        let plane = &self.file.plane_lump.planes[node.plane as usize];
+
+        let t1 = Vector3::dot(&plane.normal, start) - plane.distance;
+        let t2 = Vector3::dot(&plane.normal, end) - plane.distance;
+
+        if t1 >= 0.0 && t2 >= 0.0 {
+            return self.recursive_linetrace(node.front_child, content_mask, start, end);
+        }
+        else if t1 < 0.0 && t2 < 0.0 {
+            return self.recursive_linetrace(node.back_child, content_mask, start, end);
+        }
+
+        let trace_front = self.recursive_linetrace(node.front_child, content_mask, start, end);
+        let trace_back = self.recursive_linetrace(node.back_child, content_mask, start, end);
+
+        let d_front = match trace_front {
+            TraceResult::InSolid { .. } => 0.0,
+            TraceResult::Hit { t, .. } => t,
+            TraceResult::None => 1.0
+        };
+
+        let d_back = match trace_back {
+            TraceResult::InSolid { .. } => 0.0,
+            TraceResult::Hit { t, .. } => t,
+            TraceResult::None => 1.0
+        };
+
+        if d_front < d_back {
+            return trace_front;
+        }
+
+        return trace_back;
     }
 
     pub fn calc_leaf_index(self: &Self, position: &Vector3) -> i32 {

@@ -6,10 +6,10 @@ extern crate ktx;
 use std::{ops::{Add, Mul}, sync::Mutex};
 
 use asset_loader::load_texture;
-use bsp_file::BspFile;
+use bsp_file::{BspFile, MASK_SOLID};
 use lazy_static::lazy_static;
-use map::BspMap;
-use dbsdk_rs::{db, field_offset::offset_of, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Texture}};
+use map::{BspMap, TraceResult};
+use dbsdk_rs::{db::{self, log}, field_offset::offset_of, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Texture}};
 
 mod common;
 mod bsp_file;
@@ -122,8 +122,25 @@ impl GameState {
         let fwd = Vector3::new(fwd.x, fwd.y, fwd.z);
         let right = Vector3::new(right.x, right.y, right.z);
 
-        self.camera_position = self.camera_position.add(ly * fwd * 100.0 * (1.0 / 60.0));
-        self.camera_position = self.camera_position.add(lx * right * 100.0 * (1.0 / 60.0));
+        let new_pos = self.camera_position + (ly * fwd * 100.0 * DELTA) + (lx * right * 100.0 * DELTA);
+
+        match self.map.recursive_linetrace(0, MASK_SOLID, &self.camera_position, &new_pos) {
+            TraceResult::InSolid { .. } => {
+                self.camera_position = new_pos;
+            },
+            TraceResult::Hit { t, .. } => {
+                let delta = new_pos - self.camera_position;
+
+                if delta.length_sq() > 0.0 {
+                    let delta_mag = (delta.length() * t) - 0.1;
+                    let delta = delta.normalized() * delta_mag;
+                    self.camera_position = self.camera_position + delta;
+                }
+            },
+            TraceResult::None => {
+                self.camera_position = new_pos;
+            }
+        };
 
         let cam_proj = Matrix4x4::projection_perspective(640.0 / 480.0, (60.0_f32).to_radians(), 10.0, 10000.0);
 
