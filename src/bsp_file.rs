@@ -6,6 +6,15 @@ use dbsdk_rs::{db::log, math::Vector3};
 const BSP_MAGIC: u32 = 0x50534249;
 const BSP_VERSION: u32 = 38;
 
+pub const SURF_LIGHT: u32   = 0x1;
+pub const SURF_SLICK: u32   = 0x2;
+pub const SURF_SKY: u32     = 0x4;
+pub const SURF_WARP: u32    = 0x8;
+pub const SURF_TRANS33: u32 = 0x10;
+pub const SURF_TRANS66: u32 = 0x20;
+pub const SURF_FLOW: u32    = 0x40;
+pub const SURF_NODRAW: u32  = 0x80;
+
 fn read_vec3f<R: ReadBytesExt>(reader: &mut R) -> Vector3 {
     let x = reader.read_f32::<LittleEndian>().unwrap();
     let y = reader.read_f32::<LittleEndian>().unwrap();
@@ -162,7 +171,7 @@ pub struct VisLump {
 }
 
 pub struct LightmapLump {
-    pub lm: Vec<Color32>
+    pub lm: Vec<u16>
 }
 
 impl VertexLump {
@@ -411,7 +420,7 @@ impl TexInfoLump {
             else if tex_name.ends_with("skip") {
                 tex_type = TextureType::Skip;
             }
-            else if tex_name.contains("water") || tex_name.contains("slime") {
+            else if tex_name.contains("water") || tex_name.contains("wter") || tex_name.contains("slime") {
                 tex_type = TextureType::Liquid;
             }
             else if tex_name.starts_with("{") {
@@ -500,10 +509,16 @@ impl LightmapLump {
         reader.seek(std::io::SeekFrom::Start(info.offset as u64)).unwrap();
 
         let num_px = (info.length / 3) as usize;
-        let mut lm: Vec<Color32> = Vec::with_capacity(num_px);
+        let mut lm: Vec<u16> = Vec::with_capacity(num_px);
 
         for _ in 0..num_px {
-            lm.push(Color32::read24(reader));
+            let col = Color32::read24(reader);
+            // convert to RGB565
+            let r = (col.r >> 3) as u16;
+            let g = (col.g >> 2) as u16;
+            let b = (col.b >> 3) as u16;
+            let col = b | (g << 5) | (r << 11);
+            lm.push(col);
         }
 
         LightmapLump {

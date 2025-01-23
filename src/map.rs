@@ -1,37 +1,26 @@
-use std::{fmt::format, ops::Mul, vec};
+use std::{ops::Mul, vec};
 
-use dbsdk_rs::{db::{self, log}, field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Texture}};
+use dbsdk_rs::{db::log, field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture}};
 
-use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, TextureType}};
+use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, TextureType, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common};
+
+const DEBUG_DRAW_LM: bool = false;
 
 pub struct BspMap {
     file: BspFile,
     vis: Vec<bool>,
     prev_leaf: i32,
     meshes: Vec<Vec<PackedVertex>>,
+    lm_uvs: Vec<Vec<Vector2>>,
     visible_leaves: Vec<bool>,
     loaded_textures: Vec<Option<Texture>>,
     tex_ids: Vec<usize>,
     err_tex: Texture,
-}
-
-fn coord_space_transform() -> Matrix4x4 {
-    // Quake coordinate system:
-    // +X is right
-    // +Y is towards viewer
-    // +Z is up
-
-    // DreamBox coordinate system:
-    // +X is right
-    // +Y is up
-    // +Z is towards viewer
-
-    Matrix4x4 {m: [
-        [ 1.0,  0.0, 0.0, 0.0],
-        [ 0.0,  0.0, 1.0, 0.0],
-        [ 0.0,  1.0, 0.0, 0.0],
-        [ 0.0,  0.0, 0.0, 1.0]
-    ]}
+    lm_atlas: Texture,
+    drawn_faces: Vec<bool>,
+    opaque_meshes: Vec<usize>,
+    transp_meshes: Vec<usize>,
+    warp_time: f32,
 }
 
 impl BspMap {
@@ -39,11 +28,15 @@ impl BspMap {
         let num_clusters = bsp_file.vis_lump.clusters.len();
         let num_leaves = bsp_file.leaf_lump.leaves.len();
         let num_textures = bsp_file.tex_info_lump.textures.len();
+        let num_faces = bsp_file.face_lump.faces.len();
 
         // load unique textures
         let mut loaded_tex_names: Vec<&str> = Vec::new();
         let mut loaded_textures: Vec<Option<Texture>> = Vec::new();
         let mut tex_ids: Vec<usize> = Vec::new();
+
+        let mut opaque_meshes: Vec<usize> = Vec::new();
+        let mut transp_meshes: Vec<usize> = Vec::new();
 
         let err_tex = Texture::new(2, 2, false, vdp::TextureFormat::RGBA8888).unwrap();
         err_tex.set_texture_data(0, &[
@@ -51,7 +44,16 @@ impl BspMap {
             Color32::new(0, 0, 0, 255), Color32::new(255, 0, 255, 255)
         ]);
 
-        for tex_info in &bsp_file.tex_info_lump.textures {
+        let lm_atlas = Texture::new(512, 512, false, vdp::TextureFormat::RGB565).unwrap();
+
+        for (i, tex_info) in bsp_file.tex_info_lump.textures.iter().enumerate() {
+            if tex_info.flags & SURF_TRANS33 != 0 || tex_info.flags & SURF_TRANS66 != 0 {
+                transp_meshes.push(i);
+            }
+            else {
+                opaque_meshes.push(i);
+            }
+
             match loaded_tex_names.iter().position(|&r| r == &tex_info.texture_name) {
                 Some(i) => {
                     tex_ids.push(i);
@@ -80,14 +82,22 @@ impl BspMap {
             vis: vec![false;num_clusters],
             visible_leaves: vec![false;num_leaves],
             meshes: vec![Vec::new();num_textures],
+            lm_uvs: vec![Vec::new();num_textures],
+            drawn_faces: vec![false;num_faces],
             prev_leaf: -1,
             tex_ids,
             loaded_textures,
-            err_tex
+            err_tex,
+            lm_atlas,
+            opaque_meshes,
+            transp_meshes,
+            warp_time: 0.0,
         }
     }
 
-    pub fn draw_map(self: &mut Self, position: &Vector3, rotation: &Quaternion, camera_proj: &Matrix4x4) {
+    pub fn draw_map(self: &mut Self, delta: f32, position: &Vector3, rotation: &Quaternion, camera_proj: &Matrix4x4) {
+        self.warp_time += delta;
+
         let leaf_index = self.calc_leaf_index(position);
 
         // if camera enters a new cluster, unpack new cluster's visibility info & build geometry
@@ -111,7 +121,21 @@ impl BspMap {
                 m.clear();
             }
 
+            for m in &mut self.lm_uvs {
+                m.clear();
+            }
+
             let mut edges: Vec<Edge> = Vec::new();
+
+            let mut lm_pack_x = 0;
+            let mut lm_pack_y = 0;
+            let mut lm_pack_y_max = 0;
+
+            let lm_width = self.lm_atlas.width as usize;
+            let lm_height = self.lm_atlas.height as usize;
+
+            // faces might be shared by multiple leaves. keep track of them so we don't draw them more than once
+            self.drawn_faces.fill(false);
 
             for i in 0..self.visible_leaves.len() {
                 if self.visible_leaves[i] {
@@ -121,16 +145,22 @@ impl BspMap {
 
                     for leaf_face in start_face_idx..end_face_idx {
                         let face_idx = self.file.leaf_face_lump.faces[leaf_face] as usize;
+
+                        if self.drawn_faces[face_idx] {
+                            continue;
+                        }
+
+                        self.drawn_faces[face_idx] = true;
+
                         let face = &self.file.face_lump.faces[face_idx];
                         let tex_idx = face.texture_info as usize;
                         let tex_info = &self.file.tex_info_lump.textures[tex_idx];
-                        let plane = &self.file.plane_lump.planes[face.plane as usize];
 
                         let skip = match tex_info.tex_type {
                             TextureType::Sky => true,
                             TextureType::Skip => true,
                             TextureType::Trigger => true,
-                            // TextureType::Clip => true, // ???
+                            TextureType::Clip => true,
                             _ => false
                         };
 
@@ -138,7 +168,14 @@ impl BspMap {
                             continue;
                         }
 
-                        let col = Color32::new(255, 255, 255, 255);
+                        let mut col = Color32::new(255, 255, 255, 255);
+
+                        if tex_info.flags & SURF_TRANS33 != 0 {
+                            col.a = 85;
+                        }
+                        else if tex_info.flags & SURF_TRANS66 != 0 {
+                            col.a = 170;
+                        }
 
                         let start_edge_idx = face.first_edge as usize;
                         let end_edge_idx = start_edge_idx + (face.num_edges as usize);
@@ -157,6 +194,66 @@ impl BspMap {
                                 edges.push(edge);
                             }
                         }
+
+                        let mut tex_min = Vector2::new(f32::INFINITY, f32::INFINITY);
+                        let mut tex_max = Vector2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
+
+                        // calculate lightmap UVs
+                        for e in &edges {
+                            let pos_a = self.file.vertex_lump.vertices[e.a as usize];
+                            let pos_b = self.file.vertex_lump.vertices[e.b as usize];
+
+                            let tex_a = Vector2::new(
+                                Vector3::dot(&pos_a, &tex_info.u_axis) + tex_info.u_offset,
+                                Vector3::dot(&pos_a, &tex_info.v_axis) + tex_info.v_offset
+                            );
+
+                            let tex_b = Vector2::new(
+                                Vector3::dot(&pos_b, &tex_info.u_axis) + tex_info.u_offset,
+                                Vector3::dot(&pos_b, &tex_info.v_axis) + tex_info.v_offset
+                            );
+
+                            tex_min.x = tex_min.x.min(tex_a.x);
+                            tex_min.y = tex_min.y.min(tex_a.y);
+                            tex_min.x = tex_min.x.min(tex_b.x);
+                            tex_min.y = tex_min.y.min(tex_b.y);
+
+                            tex_max.x = tex_max.x.max(tex_a.x);
+                            tex_max.y = tex_max.y.max(tex_a.y);
+                            tex_max.x = tex_max.x.max(tex_b.x);
+                            tex_max.y = tex_max.y.max(tex_b.y);
+                        }
+
+                        let lm_size_x = ((tex_max.x / 16.0).ceil() - (tex_min.x / 16.0).floor() + 1.0).trunc() as usize;
+                        let lm_size_y = ((tex_max.y / 16.0).ceil() - (tex_min.y / 16.0).floor() + 1.0).trunc() as usize;
+
+                        let lm_size_x = lm_size_x.clamp(1, 16);
+                        let lm_size_y = lm_size_y.clamp(1, 16);
+
+                        if lm_pack_x + lm_size_x > lm_width {
+                            lm_pack_x = 0;
+                            lm_pack_y += lm_pack_y_max;
+                            lm_pack_y_max = 0;
+                        }
+
+                        if lm_pack_x + lm_size_x > lm_width || lm_pack_y + lm_size_y > lm_height {
+                            panic!("Out of room in lightmap atlas!!");
+                        }
+
+                        // upload region to lightmap atlas
+                        let slice_start = (face.lightmap_offset / 3) as usize;
+                        let slice_end = slice_start + (lm_size_x * lm_size_y);
+                        let lm_slice = &self.file.lm_lump.lm[slice_start..slice_end];
+
+                        self.lm_atlas.set_texture_data_region(0, Some(Rectangle::new(lm_pack_x as i32, lm_pack_y as i32, lm_size_x as i32, lm_size_y as i32)), lm_slice);
+
+                        // hack: scale lightmap UVs inwards to avoid bilinear sampling artifacts on borders
+                        // todo: should probably be padding these instead
+                        let lm_region_offset = Vector2::new((lm_pack_x + 1) as f32 / lm_width as f32, (lm_pack_y + 1) as f32 / lm_height as f32);
+                        let lm_region_scale = Vector2::new((lm_size_x.saturating_sub(2)) as f32 / lm_width as f32, (lm_size_y.saturating_sub(2)) as f32 / lm_height as f32);
+
+                        lm_pack_x += lm_size_x;
+                        lm_pack_y_max = lm_pack_y_max.max(lm_size_y);
 
                         // build triangle fan out of edges (note: clockwise winding)
                         for i in 1..edges.len() {
@@ -183,19 +280,23 @@ impl BspMap {
                                 Vector3::dot(&pos_c, &tex_info.v_axis) + tex_info.v_offset
                             );
 
+                            let lm_a = (((tex_a - tex_min) / (tex_max - tex_min)) * lm_region_scale) + lm_region_offset;
+                            let lm_b = (((tex_b - tex_min) / (tex_max - tex_min)) * lm_region_scale) + lm_region_offset;
+                            let lm_c = (((tex_c - tex_min) / (tex_max - tex_min)) * lm_region_scale) + lm_region_offset;
+
                             let tex_id = self.tex_ids[tex_idx];
                             match &self.loaded_textures[tex_id] {
                                 Some(v) => {
                                     let sc = Vector2::new(1.0 / v.width as f32, 1.0 / v.height as f32);
-                                    tex_a = tex_a.mul(sc);
-                                    tex_b = tex_b.mul(sc);
-                                    tex_c = tex_c.mul(sc);
+                                    tex_a = tex_a * sc;
+                                    tex_b = tex_b * sc;
+                                    tex_c = tex_c * sc;
                                 }
                                 None => {
                                     let sc = Vector2::new(1.0 / 64.0, 1.0 / 64.0);
-                                    tex_a = tex_a.mul(sc);
-                                    tex_b = tex_b.mul(sc);
-                                    tex_c = tex_c.mul(sc);
+                                    tex_a = tex_a * sc;
+                                    tex_b = tex_b * sc;
+                                    tex_c = tex_c * sc;
                                 }
                             };
 
@@ -213,6 +314,10 @@ impl BspMap {
                             self.meshes[tex_idx].push(vtx_a);
                             self.meshes[tex_idx].push(vtx_b);
                             self.meshes[tex_idx].push(vtx_c);
+
+                            self.lm_uvs[tex_idx].push(lm_a);
+                            self.lm_uvs[tex_idx].push(lm_b);
+                            self.lm_uvs[tex_idx].push(lm_c);
                         }
                     }
                 }
@@ -223,34 +328,21 @@ impl BspMap {
         Matrix4x4::load_identity_simd();
         Matrix4x4::mul_simd(&Matrix4x4::translation((*position).mul(-1.0)));
         Matrix4x4::mul_simd(&Matrix4x4::rotation({let mut r = *rotation; r.invert(); r}));
-        Matrix4x4::mul_simd(&coord_space_transform());
+        Matrix4x4::mul_simd(&common::coord_space_transform());
         Matrix4x4::mul_simd(camera_proj);
 
         let mut geo_buff: Vec<PackedVertex> = Vec::with_capacity(1024);
 
         // set up render state
-        vdp::depth_func(vdp::Compare::LessOrEqual);
         vdp::set_winding(vdp::WindingOrder::CounterClockwise);
         vdp::set_culling(true);
-        vdp::bind_texture(None);
+        vdp::blend_equation(vdp::BlendEquation::Add);
 
-        for (i, m) in self.meshes.iter().enumerate() {
-            let tex_info = &self.file.tex_info_lump.textures[i];
+        for i in &self.opaque_meshes {
+            let m = &self.meshes[*i];
+            let lm_uvs = &self.lm_uvs[*i];
 
-            match tex_info.tex_type {
-                TextureType::Liquid => {
-                    vdp::blend_equation(vdp::BlendEquation::Add);
-                    vdp::blend_func(vdp::BlendFactor::SrcAlpha, vdp::BlendFactor::OneMinusSrcAlpha);
-                    vdp::depth_write(false);
-                }
-                _ => {
-                    vdp::blend_equation(vdp::BlendEquation::Add);
-                    vdp::blend_func(vdp::BlendFactor::One, vdp::BlendFactor::Zero);
-                    vdp::depth_write(true);
-                }
-            }
-
-            let tex_id = self.tex_ids[i];
+            let tex_id = self.tex_ids[*i];
             match &self.loaded_textures[tex_id] {
                 Some(v) => {
                     vdp::bind_texture(Some(v));
@@ -266,10 +358,98 @@ impl BspMap {
                 geo_buff.clear();
                 geo_buff.extend_from_slice(m);
 
+                if self.file.tex_info_lump.textures[*i].flags & SURF_WARP != 0 {
+                    // warp UVs
+                    for vtx in &mut geo_buff {
+                        let os = vtx.position.x * 0.05;
+                        let ot = vtx.position.y * 0.05;
+
+                        vtx.texcoord.x += (self.warp_time + ot).sin() * 0.1;
+                        vtx.texcoord.y += (self.warp_time + os).cos() * 0.1;
+                    }
+                }
+
                 // transform vertices & draw
+                vdp::depth_func(vdp::Compare::LessOrEqual);
+                vdp::depth_write(true);
+                vdp::blend_func(vdp::BlendFactor::One, vdp::BlendFactor::Zero);
+
+                Matrix4x4::transform_vertex_simd(&mut geo_buff, offset_of!(PackedVertex => position));
+                vdp::draw_geometry_packed(vdp::Topology::TriangleList, &geo_buff);
+
+                // copy lightmap UVs & draw again (we don't need to re-transform)
+                for i in 0..geo_buff.len() {
+                    geo_buff[i].texcoord = lm_uvs[i];
+                }
+
+                vdp::depth_func(vdp::Compare::Equal);
+                vdp::depth_write(false);
+                vdp::blend_func(vdp::BlendFactor::Zero, vdp::BlendFactor::SrcColor);
+
+                vdp::bind_texture(Some(&self.lm_atlas));
+                vdp::set_sample_params(vdp::TextureFilter::Linear, vdp::TextureWrap::Repeat, vdp::TextureWrap::Repeat);
+                vdp::draw_geometry_packed(vdp::Topology::TriangleList, &geo_buff);
+            }
+        }
+
+        vdp::depth_func(vdp::Compare::LessOrEqual);
+        vdp::depth_write(false);
+        vdp::blend_func(vdp::BlendFactor::SrcAlpha, vdp::BlendFactor::OneMinusSrcAlpha);
+
+        for i in &self.transp_meshes {
+            let m = &self.meshes[*i];
+
+            let tex_id = self.tex_ids[*i];
+            match &self.loaded_textures[tex_id] {
+                Some(v) => {
+                    vdp::bind_texture(Some(v));
+                    vdp::set_sample_params(vdp::TextureFilter::Linear, vdp::TextureWrap::Repeat, vdp::TextureWrap::Repeat);
+                }
+                None => {
+                    vdp::bind_texture(Some(&self.err_tex));
+                    vdp::set_sample_params(vdp::TextureFilter::Nearest, vdp::TextureWrap::Repeat, vdp::TextureWrap::Repeat);
+                }
+            };
+
+            if m.len() > 0 {
+                geo_buff.clear();
+                geo_buff.extend_from_slice(m);
+
+                if self.file.tex_info_lump.textures[*i].flags & SURF_WARP != 0 {
+                    // warp UVs
+                    for vtx in &mut geo_buff {
+                        let os = vtx.position.x * 0.05;
+                        let ot = vtx.position.y * 0.05;
+
+                        vtx.texcoord.x += (self.warp_time + ot).sin() * 0.1;
+                        vtx.texcoord.y += (self.warp_time + os).cos() * 0.1;
+                    }
+                }
+
+                // transform vertices & draw
+                vdp::depth_func(vdp::Compare::LessOrEqual);
                 Matrix4x4::transform_vertex_simd(&mut geo_buff, offset_of!(PackedVertex => position));
                 vdp::draw_geometry_packed(vdp::Topology::TriangleList, &geo_buff);
             }
+        }
+
+        if DEBUG_DRAW_LM {
+            let quad = [
+                PackedVertex::new(Vector4::new(-1.0, -1.0, 0.0, 1.0), Vector2::new(0.0, 0.0), Color32::new(255, 255, 255, 255), Color32::new(0, 0, 0, 0)),
+                PackedVertex::new(Vector4::new(-1.0, 0.0, 0.0, 1.0), Vector2::new(0.0, 1.0), Color32::new(255, 255, 255, 255), Color32::new(0, 0, 0, 0)),
+                PackedVertex::new(Vector4::new(0.0, -1.0, 0.0, 1.0), Vector2::new(1.0, 0.0), Color32::new(255, 255, 255, 255), Color32::new(0, 0, 0, 0)),
+
+                PackedVertex::new(Vector4::new(0.0, -1.0, 0.0, 1.0), Vector2::new(1.0, 0.0), Color32::new(255, 255, 255, 255), Color32::new(0, 0, 0, 0)),
+                PackedVertex::new(Vector4::new(-1.0, 0.0, 0.0, 1.0), Vector2::new(0.0, 1.0), Color32::new(255, 255, 255, 255), Color32::new(0, 0, 0, 0)),
+                PackedVertex::new(Vector4::new(0.0, 0.0, 0.0, 1.0), Vector2::new(1.0, 1.0), Color32::new(255, 255, 255, 255), Color32::new(0, 0, 0, 0)),
+            ];
+
+            vdp::depth_func(vdp::Compare::Always);
+            vdp::depth_write(false);
+            vdp::bind_texture(Some(&self.lm_atlas));
+            vdp::blend_func(vdp::BlendFactor::One, vdp::BlendFactor::Zero);
+            vdp::set_culling(false);
+            vdp::draw_geometry_packed(vdp::Topology::TriangleList, &quad);
         }
     }
 
