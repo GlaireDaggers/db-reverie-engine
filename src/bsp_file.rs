@@ -1,4 +1,4 @@
-use std::{io::Seek, path::Path};
+use std::io::Seek;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use dbsdk_rs::{db::log, math::Vector3};
@@ -6,22 +6,22 @@ use dbsdk_rs::{db::log, math::Vector3};
 const BSP_MAGIC: u32 = 0x50534249;
 const BSP_VERSION: u32 = 38;
 
-pub const SURF_LIGHT: u32   = 0x1;
-pub const SURF_SLICK: u32   = 0x2;
+//pub const SURF_LIGHT: u32   = 0x1;
+//pub const SURF_SLICK: u32   = 0x2;
 pub const SURF_SKY: u32     = 0x4;
 pub const SURF_WARP: u32    = 0x8;
 pub const SURF_TRANS33: u32 = 0x10;
 pub const SURF_TRANS66: u32 = 0x20;
-pub const SURF_FLOW: u32    = 0x40;
+//pub const SURF_FLOW: u32    = 0x40;
 pub const SURF_NODRAW: u32  = 0x80;
 
 pub const CONTENTS_SOLID: u32       = 1;
 pub const CONTENTS_WINDOW: u32      = 2;
-pub const CONTENTS_AUX: u32         = 4;
-pub const CONTENTS_LAVA: u32        = 8;
-pub const CONTENTS_SLIME: u32       = 16;
-pub const CONTENTS_WATER: u32       = 32;
-pub const CONTENTS_MIST: u32        = 64;
+//pub const CONTENTS_AUX: u32         = 4;
+//pub const CONTENTS_LAVA: u32        = 8;
+//pub const CONTENTS_SLIME: u32       = 16;
+//pub const CONTENTS_WATER: u32       = 32;
+//pub const CONTENTS_MIST: u32        = 64;
 
 pub const MASK_SOLID: u32           = CONTENTS_SOLID | CONTENTS_WINDOW;
 
@@ -41,35 +41,22 @@ fn read_vec3s<R: ReadBytesExt>(reader: &mut R) -> Vector3 {
     Vector3::new(x, y, z)
 }
 
-#[derive(Debug)]
-pub enum TextureType {
-    Default,
-    Liquid,
-    Sky,
-    Skip,
-    Fence,
-    Clip,
-    Trigger,
-}
-
-pub struct Color32 {
+pub struct Color24 {
     pub r: u8,
     pub g: u8,
-    pub b: u8,
-    pub a: u8
+    pub b: u8
 }
 
-impl Color32 {
-    pub fn read24<R: ReadBytesExt>(reader: &mut R) -> Color32 {
+impl Color24 {
+    pub fn read<R: ReadBytesExt>(reader: &mut R) -> Color24 {
         let r = reader.read_u8().unwrap();
         let g = reader.read_u8().unwrap();
         let b = reader.read_u8().unwrap();
 
-        Color32 {
+        Color24 {
             r,
             g,
-            b,
-            a: 255
+            b
         }
     }
 }
@@ -86,12 +73,12 @@ pub struct Edge {
 }
 
 pub struct BspFace {
-    pub plane: u16,
-    pub plane_side: u16,
+    pub _plane: u16,
+    pub _plane_side: u16,
     pub first_edge: u32,
     pub num_edges: u16,
     pub texture_info: u16,
-    pub lightmap_styles: [u8;4],
+    pub _lightmap_styles: [u8;4],
     pub lightmap_offset: u32,
 }
 
@@ -105,18 +92,18 @@ pub struct Node {
     pub plane: u32,
     pub front_child: i32,
     pub back_child: i32,
-    pub bbox_min: Vector3,
-    pub bbox_max: Vector3,
-    pub first_face: u16,
-    pub num_faces: u16,
+    pub _bbox_min: Vector3,
+    pub _bbox_max: Vector3,
+    pub _first_face: u16,
+    pub _num_faces: u16,
 }
 
 pub struct Leaf {
     pub contents: u32,
     pub cluster: u16,
-    pub area: u16,
-    pub bbox_min: Vector3,
-    pub bbox_max: Vector3,
+    pub _area: u16,
+    pub _bbox_min: Vector3,
+    pub _bbox_max: Vector3,
     pub first_leaf_face: u16,
     pub num_leaf_faces: u16,
     pub first_leaf_brush: u16,
@@ -129,10 +116,9 @@ pub struct TexInfo {
     pub v_axis: Vector3,
     pub v_offset: f32,
     pub flags: u32,
-    pub value: u32,
+    pub _value: u32,
     pub texture_name: String,
-    pub next_texinfo: u32,
-    pub tex_type: TextureType,
+    pub _next_texinfo: u32,
 }
 
 pub struct Brush {
@@ -143,11 +129,20 @@ pub struct Brush {
 
 pub struct BrushSide {
     pub plane: u16,
-    pub tex: u16,
+    pub _tex: u16,
 }
 
 pub struct VisCluster {
     pub vis_offset: usize
+}
+
+pub struct SubModel {
+    pub _mins: Vector3,
+    pub _maxs: Vector3,
+    pub _origin: Vector3,
+    pub headnode: u32,
+    pub _first_face: u32,
+    pub _num_faces: u32,
 }
 
 pub struct VertexLump {
@@ -201,6 +196,10 @@ pub struct BrushLump {
 
 pub struct BrushSideLump {
     pub brush_sides: Vec<BrushSide>
+}
+
+pub struct SubModelLump {
+    pub submodels: Vec<SubModel>
 }
 
 pub struct LightmapLump {
@@ -265,7 +264,7 @@ impl FaceLump {
             let lightmap_offset = reader.read_u32::<LittleEndian>().unwrap();
 
             faces.push(BspFace {
-                plane, plane_side, first_edge, num_edges, texture_info, lightmap_styles, lightmap_offset
+                _plane: plane, _plane_side: plane_side, first_edge, num_edges, texture_info, _lightmap_styles: lightmap_styles, lightmap_offset
             });
         }
 
@@ -334,10 +333,10 @@ impl NodeLump {
                 plane,
                 front_child,
                 back_child,
-                bbox_min,
-                bbox_max,
-                first_face,
-                num_faces
+                _bbox_min: bbox_min,
+                _bbox_max: bbox_max,
+                _first_face: first_face,
+                _num_faces: num_faces
             });
         }
 
@@ -370,9 +369,9 @@ impl LeafLump {
             leaves.push(Leaf {
                 contents: brush_or,
                 cluster,
-                area,
-                bbox_min,
-                bbox_max,
+                _area: area,
+                _bbox_min: bbox_min,
+                _bbox_max: bbox_max,
                 first_leaf_face,
                 num_leaf_faces,
                 first_leaf_brush,
@@ -455,39 +454,15 @@ impl TexInfoLump {
             let texture_name = unsafe { std::str::from_utf8_unchecked(&texture_name[0..name_len]) }.to_owned();
             let next_texinfo = reader.read_u32::<LittleEndian>().unwrap();
 
-            let mut tex_type = TextureType::Default;
-            let tex_path = Path::new(texture_name.as_str());
-            let tex_name = tex_path.file_name().unwrap().to_str().unwrap();
-
-            if tex_name.contains("sky") {
-                tex_type = TextureType::Sky;
-            }
-            else if tex_name == "clip" {
-                tex_type = TextureType::Clip;
-            }
-            else if tex_name == "trigger" {
-                tex_type = TextureType::Trigger;
-            }
-            else if tex_name.ends_with("skip") {
-                tex_type = TextureType::Skip;
-            }
-            else if tex_name.contains("water") || tex_name.contains("wter") || tex_name.contains("slime") {
-                tex_type = TextureType::Liquid;
-            }
-            else if tex_name.starts_with("{") {
-                tex_type = TextureType::Fence;
-            }
-
             textures.push(TexInfo {
                 u_axis,
                 u_offset,
                 v_axis,
                 v_offset,
                 flags,
-                value,
+                _value: value,
                 texture_name,
-                next_texinfo,
-                tex_type,
+                _next_texinfo: next_texinfo,
             });
         }
 
@@ -563,11 +538,15 @@ impl LightmapLump {
         let mut lm: Vec<u16> = Vec::with_capacity(num_px);
 
         for _ in 0..num_px {
-            let col = Color32::read24(reader);
+            let col = Color24::read(reader);
+            // jesus this lightmap is dark
+            let r = ((col.r as i32) << 1).clamp(0, 255);
+            let g = ((col.g as i32) << 1).clamp(0, 255);
+            let b = ((col.b as i32) << 1).clamp(0, 255);
             // convert to RGB565
-            let r = (col.r >> 3) as u16;
-            let g = (col.g >> 2) as u16;
-            let b = (col.b >> 3) as u16;
+            let r = (r >> 3) as u16;
+            let g = (g >> 2) as u16;
+            let b = (b >> 3) as u16;
             let col = b | (g << 5) | (r << 11);
             lm.push(col);
         }
@@ -610,11 +589,43 @@ impl BrushSideLump {
             let plane = reader.read_u16::<LittleEndian>().unwrap();
             let tex = reader.read_u16::<LittleEndian>().unwrap();
 
-            brush_sides.push(BrushSide { plane, tex });
+            brush_sides.push(BrushSide { plane, _tex: tex });
         }
 
         BrushSideLump {
             brush_sides
+        }
+    }
+}
+
+impl SubModelLump {
+    pub fn new<R: Seek + ReadBytesExt>(reader: &mut R, info: &BspLumpInfo) -> SubModelLump {
+        reader.seek(std::io::SeekFrom::Start(info.offset as u64)).unwrap();
+
+        let num_submodels = (info.length / 48) as usize;
+        let mut submodels: Vec<SubModel> = Vec::with_capacity(num_submodels);
+
+        for _ in 0..num_submodels {
+            let mins = read_vec3f(reader);
+            let maxs = read_vec3f(reader);
+            let origin = read_vec3f(reader);
+
+            let headnode = reader.read_u32::<LittleEndian>().unwrap();
+            let first_face = reader.read_u32::<LittleEndian>().unwrap();
+            let num_faces = reader.read_u32::<LittleEndian>().unwrap();
+
+            submodels.push(SubModel {
+                _mins: mins,
+                _maxs: maxs,
+                _origin: origin,
+                headnode,
+                _first_face: first_face,
+                _num_faces: num_faces
+            });
+        }
+
+        SubModelLump {
+            submodels
         }
     }
 }
@@ -634,6 +645,7 @@ pub struct BspFile {
     pub lm_lump: LightmapLump,
     pub brush_lump: BrushLump,
     pub brush_side_lump: BrushSideLump,
+    pub submodel_lump: SubModelLump,
 }
 
 impl BspFile {
@@ -671,6 +683,7 @@ impl BspFile {
         let leaf_brush_lump = LeafBrushLump::new(reader, &bsp_lumps[10]);
         let edge_lump = EdgeLump::new(reader, &bsp_lumps[11]);
         let face_edge_lump = FaceEdgeLump::new(reader, &bsp_lumps[12]);
+        let submodel_lump = SubModelLump::new(reader, &bsp_lumps[13]);
         let brush_lump = BrushLump::new(reader, &bsp_lumps[14]);
         let brush_side_lump = BrushSideLump::new(reader, &bsp_lumps[15]);
 
@@ -688,7 +701,8 @@ impl BspFile {
             vis_lump,
             lm_lump,
             brush_lump,
-            brush_side_lump
+            brush_side_lump,
+            submodel_lump
         }
     }
 }

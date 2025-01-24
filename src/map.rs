@@ -1,8 +1,8 @@
-use std::{ops::Mul, vec};
+use std::{collections::HashSet, ops::Mul, vec};
 
 use dbsdk_rs::{db::log, field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture}};
 
-use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, TextureType, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common};
+use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, SURF_NODRAW, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common};
 
 const DEBUG_DRAW_LM: bool = false;
 const DIST_EPSILON: f32 = 0.03125;
@@ -24,10 +24,12 @@ pub struct BspMap {
     warp_time: f32,
 }
 
-pub enum TraceResult {
-    None,
-    Hit { t: f32, plane_index: usize, side_index: usize, contents: u32 },
-    InSolid { end_solid: bool }
+pub struct Trace {
+    pub all_solid: bool,
+    pub start_solid: bool,
+    pub fraction: f32,
+    pub end_pos: Vector3,
+    pub plane: i32
 }
 
 impl BspMap {
@@ -163,15 +165,10 @@ impl BspMap {
                         let tex_idx = face.texture_info as usize;
                         let tex_info = &self.file.tex_info_lump.textures[tex_idx];
 
-                        let skip = match tex_info.tex_type {
-                            TextureType::Sky => true,
-                            TextureType::Skip => true,
-                            TextureType::Trigger => true,
-                            TextureType::Clip => true,
-                            _ => false
-                        };
-
-                        if skip {
+                        if tex_info.flags & SURF_NODRAW != 0 {
+                            continue;
+                        }
+                        if tex_info.flags & SURF_SKY != 0 {
                             continue;
                         }
 
@@ -460,22 +457,14 @@ impl BspMap {
         }
     }
 
-    pub fn point_contents(self: &Self, point: &Vector3) -> u32 {
-        let node = self.calc_leaf_index(point);
-        let leaf = &self.file.leaf_lump.leaves[node as usize];
-
-        return leaf.contents;
-    }
-
-    fn trace_brush(self: &Self, brush_idx: usize, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>) -> TraceResult {
+    fn trace_brush(self: &Self, brush_idx: usize, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>, trace: &mut Trace) {
         let brush = &self.file.brush_lump.brushes[brush_idx];
 
         if brush.num_brush_sides == 0 {
-            return TraceResult::None;
+            return;
         }
 
         let mut hitplane = -1;
-        let mut hitside = -1;
         let mut enterfrac = -1.0;
         let mut exitfrac = 1.0;
         let mut startout = false;
@@ -512,7 +501,7 @@ impl BspMap {
             }
 
             if d1 > 0.0 && d2 >= d1 {
-                return TraceResult::None;
+                return;
             }
 
             if d1 <= 0.0 && d2 <= 0.0 {
@@ -524,7 +513,6 @@ impl BspMap {
                 if f > enterfrac {
                     enterfrac = f;
                     hitplane = side.plane as i32;
-                    hitside = (brush.first_brush_side + i) as i32;
                 }
             }
             else {
@@ -534,106 +522,203 @@ impl BspMap {
                 }
             }
         }
-
+        
         if !startout {
-            return TraceResult::InSolid { end_solid: !getout };
+            trace.start_solid = true;
+            if !getout {
+                trace.all_solid = true;
+            }
+
+            return;
         }
 
         if enterfrac < exitfrac {
-            if enterfrac > -1.0 {
+            if enterfrac > -1.0 && enterfrac < trace.fraction {
                 if enterfrac < 0.0 {
                     enterfrac = 0.0;
                 }
 
-                return TraceResult::Hit { t: enterfrac, plane_index: hitplane as usize, side_index: hitside as usize, contents: brush.contents };
+                trace.fraction = enterfrac;
+                trace.plane = hitplane;
             }
         }
-
-        return TraceResult::None;
     }
 
-    pub fn trace_leaf(self: &Self, leaf_index: usize, content_mask: u32, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>) -> TraceResult {
+    fn trace_leaf(self: &Self, leaf_index: usize, checked_brush: &mut HashSet<u16>, content_mask: u32, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>, trace: &mut Trace) {
         let leaf = &self.file.leaf_lump.leaves[leaf_index];
 
         if leaf.contents & content_mask == 0 {
-            return TraceResult::None;
+            return;
         }
-
-        let mut best_result = TraceResult::None;
-        let mut best_dist = 1.0;
 
         // linetrace all brushes in leaf
         for i in 0..leaf.num_leaf_brushes {
             let brush_idx = self.file.leaf_brush_lump.brushes[(leaf.first_leaf_brush + i) as usize];
-            let trace_result = self.trace_brush(brush_idx as usize, start, end, box_extents);
+            
+            // ensure we don't process the same brush more than once during a trace
+            if checked_brush.contains(&brush_idx) {
+                continue;
+            }
+            checked_brush.insert(brush_idx);
 
-            match trace_result {
-                TraceResult::InSolid { end_solid } => {
-                    return TraceResult::InSolid { end_solid };
-                }
-                TraceResult::Hit { t, plane_index, side_index, contents } => {
-                    if t < best_dist {
-                        best_result = TraceResult::Hit { t, plane_index, side_index, contents };
-                        best_dist = t;
-                    }
-                }
-                _ => {
-                }
+            let brush = &self.file.brush_lump.brushes[brush_idx as usize];
+
+            if brush.contents & content_mask == 0 {
+                return;
+            }
+
+            self.trace_brush(brush_idx as usize, start, end, box_extents, trace);
+
+            if trace.fraction == 0.0 {
+                return;
             }
         }
-
-        best_result
     }
 
-    pub fn recursive_trace(self: &Self, node_idx: i32, content_mask: u32, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>) -> TraceResult {
+    fn recursive_trace(self: &Self, node_idx: i32, checked_brush: &mut HashSet<u16>, content_mask: u32, p1f: f32, p2f: f32, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>, trace: &mut Trace) {
+        if trace.fraction <= p1f {
+            return;
+        }
+        
         if node_idx < 0 {
-            return self.trace_leaf((-node_idx - 1) as usize, content_mask, start, end, box_extents);
+            self.trace_leaf((-node_idx - 1) as usize, checked_brush, content_mask, start, end, box_extents, trace);
+            return;
         }
 
         let node = &self.file.node_lump.nodes[node_idx as usize];
         let plane = &self.file.plane_lump.planes[node.plane as usize];
 
-        let t1 = Vector3::dot(&plane.normal, start) - plane.distance;
-        let t2 = Vector3::dot(&plane.normal, end) - plane.distance;
+        let (t1, t2, offset) = if plane.plane_type == 0 {
+            let t1 = start.x - plane.distance;
+            let t2 = end.x - plane.distance;
+            let offset = match box_extents {
+                Some(v) => {
+                    v.x
+                }
+                None => {
+                    0.0
+                }
+            };
 
-        let offset = match box_extents {
-            Some(v) => {
-                (v.x * plane.normal.x).abs() +
-                (v.y * plane.normal.y).abs() +
-                (v.z * plane.normal.z).abs()
-            },
-            None => {
-                0.0
-            }
+            (t1, t2, offset)
+        }
+        else if plane.plane_type == 1 {
+            let t1 = start.y - plane.distance;
+            let t2 = end.y - plane.distance;
+            let offset = match box_extents {
+                Some(v) => {
+                    v.y
+                }
+                None => {
+                    0.0
+                }
+            };
+
+            (t1, t2, offset)
+        }
+        else if plane.plane_type == 2 {
+            let t1 = start.z - plane.distance;
+            let t2 = end.z - plane.distance;
+            let offset = match box_extents {
+                Some(v) => {
+                    v.z
+                }
+                None => {
+                    0.0
+                }
+            };
+
+            (t1, t2, offset)
+        }
+        else {
+            let t1 = Vector3::dot(&plane.normal, start) - plane.distance;
+            let t2 = Vector3::dot(&plane.normal, end) - plane.distance;
+            let offset = match box_extents {
+                Some(v) => {
+                    (v.x * plane.normal.x).abs() +
+                    (v.y * plane.normal.y).abs() +
+                    (v.z * plane.normal.z).abs()
+                },
+                None => {
+                    0.0
+                }
+            };
+
+            (t1, t2, offset)
         };
 
         if t1 >= offset && t2 >= offset {
-            return self.recursive_trace(node.front_child, content_mask, start, end, box_extents);
-        }
-        else if t1 < -offset && t2 < -offset {
-            return self.recursive_trace(node.back_child, content_mask, start, end, box_extents);
+            self.recursive_trace(node.front_child, checked_brush, content_mask, p1f, p2f, start, end, box_extents, trace);
+            return;
         }
 
-        let trace_front = self.recursive_trace(node.front_child, content_mask, start, end, box_extents);
-        let trace_back = self.recursive_trace(node.back_child, content_mask, start, end, box_extents);
+        if t1 < -offset && t2 < -offset {
+            self.recursive_trace(node.back_child, checked_brush, content_mask, p1f, p2f, start, end, box_extents, trace);
+            return;
+        }
 
-        let d_front = match trace_front {
-            TraceResult::InSolid { .. } => 0.0,
-            TraceResult::Hit { t, .. } => t,
-            TraceResult::None => 1.0
+        let (side, frac2, frac) = if t1 < t2 {
+            let idist = 1.0 / (t1 - t2);
+            (
+                true,
+                (t1 + offset + DIST_EPSILON)*idist,
+                (t1 - offset + DIST_EPSILON)*idist
+            )
+        }
+        else if t1 > t2 {
+            let idist = 1.0 / (t1 - t2);
+            (
+                false,
+                (t1 - offset - DIST_EPSILON)*idist,
+                (t1 + offset + DIST_EPSILON)*idist
+            )
+        }
+        else {
+            (
+                false,
+                0.0,
+                1.0
+            )
         };
 
-        let d_back = match trace_back {
-            TraceResult::InSolid { .. } => 0.0,
-            TraceResult::Hit { t, .. } => t,
-            TraceResult::None => 1.0
+        // move up to the node
+        let frac = frac.clamp(0.0, 1.0);
+
+        let midf = p1f + ((p2f - p1f) * frac);
+        let mid = *start + ((*end - *start) * frac);
+
+        self.recursive_trace(if side { node.back_child } else { node.front_child }, checked_brush, content_mask, p1f, midf, start, &mid, box_extents, trace);
+
+        // go past the node
+        let frac2 = frac2.clamp(0.0, 1.0);
+
+        let midf = p1f + ((p2f - p1f) * frac2);
+        let mid = *start + ((*end - *start) * frac2);
+
+        self.recursive_trace(if side { node.front_child } else { node.back_child }, checked_brush, content_mask, midf, p2f, &mid, end, box_extents, trace);
+    }
+
+    pub fn boxtrace(self: &Self, content_mask: u32, start: &Vector3, end: &Vector3, box_extents: Vector3) -> Trace {
+        let head_node = self.file.submodel_lump.submodels[0].headnode as i32;
+
+        let mut trace_trace = Trace {
+            all_solid: false,
+            start_solid: false,
+            fraction: 1.0,
+            end_pos: Vector3::zero(),
+            plane: -1
         };
 
-        if d_front < d_back {
-            return trace_front;
+        self.recursive_trace(head_node, &mut HashSet::<u16>::new(), content_mask, 0.0, 1.0, start, end, Some(&box_extents), &mut trace_trace);
+
+        if trace_trace.fraction == 1.0 {
+            trace_trace.end_pos = *end;
+        }
+        else {
+            trace_trace.end_pos = *start + ((*end - *start) * trace_trace.fraction);
         }
 
-        return trace_back;
+        trace_trace
     }
 
     pub fn calc_leaf_index(self: &Self, position: &Vector3) -> i32 {

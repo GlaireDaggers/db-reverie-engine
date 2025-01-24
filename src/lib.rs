@@ -3,12 +3,12 @@ extern crate byteorder;
 extern crate lazy_static;
 extern crate ktx;
 
-use std::{ops::{Add, Mul}, sync::Mutex};
+use std::{ops::Mul, sync::Mutex};
 
 use asset_loader::load_texture;
 use bsp_file::{BspFile, MASK_SOLID};
 use lazy_static::lazy_static;
-use map::{BspMap, TraceResult};
+use map::BspMap;
 use dbsdk_rs::{db::{self, log}, field_offset::offset_of, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Texture}};
 
 mod common;
@@ -27,6 +27,7 @@ struct GameState {
     camera_position: Vector3,
     map: BspMap,
     env: Option<[Texture;6]>,
+    frame: u32,
 }
 
 impl GameState {
@@ -48,9 +49,10 @@ impl GameState {
             gamepad: Gamepad::new(gamepad::GamepadSlot::SlotA),
             cam_x: 180.0,
             cam_y: 0.0,
-            camera_position: Vector3::zero(),
+            camera_position: Vector3::new(0.0, 0.0, 20.0),
             map,
-            env: Some([env_ft, env_bk, env_lf, env_rt, env_up, env_dn])
+            env: Some([env_ft, env_bk, env_lf, env_rt, env_up, env_dn]),
+            frame: 0,
         }
     }
 
@@ -85,49 +87,106 @@ impl GameState {
         vdp::draw_geometry_packed(vdp::Topology::TriangleList, &quad);
     }
 
-    fn trace_move(self: &Self, start_pos: &Vector3, delta: &Vector3, box_extents: Option<&Vector3>) -> Vector3 {
+    fn trace_move(self: &Self, start_pos: &Vector3, velocity: &Vector3, delta: f32, box_extents: Vector3) -> Vector3 {
+        const MAX_CLIP_PLANES: usize = 8;
+        const NUM_ITERATIONS: usize = 4;
+        const STOP_EPSILON: f32 = 0.1;
+
         let mut cur_pos = *start_pos;
-        let mut cur_delta = *delta;
+        let mut cur_velocity = *velocity;
+        let mut remaining_delta = delta;
 
-        for _ in 0..4 {
-            let new_pos = cur_pos + cur_delta;
+        let mut planes: [Vector3; MAX_CLIP_PLANES] = [Vector3::zero(); MAX_CLIP_PLANES];
+        let mut num_planes: usize = 0;
 
-            match self.map.recursive_trace(0, MASK_SOLID, &cur_pos, &new_pos, box_extents) {
-                TraceResult::InSolid { .. } => {
-                    return new_pos;
-                },
-                TraceResult::Hit { t, plane_index, .. } => {
-                    let hit_plane = &self.map.file.plane_lump.planes[plane_index];
-                    let delta = new_pos - self.camera_position;
-    
-                    if delta.length_sq() > 0.0 {
-                        let desired_delta = delta.length();
-                        let actual_delta = (desired_delta * t) - 1.0;
-                        let delta_dir = delta.normalized();
-                        cur_pos = cur_pos + (delta_dir * actual_delta);
-    
-                        // project remainder along plane normal
-                        let leftover_delta = desired_delta - actual_delta;
-                        let slide_dir = delta_dir - (hit_plane.normal * Vector3::dot(&hit_plane.normal, &delta_dir));
-                        if slide_dir.length_sq() > 0.0 {
-                            cur_delta = slide_dir * leftover_delta;
-                        }
-                        else {
-                            return cur_pos;
+        for _iter in 0..NUM_ITERATIONS {
+            let end = cur_pos + (cur_velocity * remaining_delta);
+            let trace = self.map.boxtrace(MASK_SOLID, &cur_pos, &end, box_extents);
+
+            if trace.all_solid {
+                log(format!("STUCK {}", self.frame).as_str());
+                return cur_pos;
+            }
+
+            if trace.fraction > 0.0 {
+                cur_pos = trace.end_pos;
+                num_planes = 0;
+            }
+
+            if trace.fraction == 1.0 {
+                break;
+            }
+
+            remaining_delta -= remaining_delta * trace.fraction;
+
+            if num_planes >= MAX_CLIP_PLANES {
+                break;
+            }
+
+            let plane = &self.map.file.plane_lump.planes[trace.plane as usize];
+            planes[num_planes] = plane.normal;
+            num_planes += 1;
+
+            let mut broke_i: bool = false;
+            for i in 0..num_planes {
+                // clip velocity to plane
+                let backoff = Vector3::dot(&cur_velocity, &planes[i]) * 1.01;
+                cur_velocity = cur_velocity - (planes[i] * backoff);
+
+                if cur_velocity.x.abs() < STOP_EPSILON {
+                    cur_velocity.x = 0.0;
+                }
+
+                if cur_velocity.y.abs() < STOP_EPSILON {
+                    cur_velocity.y = 0.0;
+                }
+
+                if cur_velocity.z.abs() < STOP_EPSILON {
+                    cur_velocity.z = 0.0;
+                }
+
+                let mut broke_j = false;
+                for j in 0..num_planes {
+                    if j != i {
+                        if Vector3::dot(&cur_velocity, &planes[j]) < 0.0 {
+                            broke_j = true;
+                            break;
                         }
                     }
-                },
-                TraceResult::None => {
-                    return new_pos;
                 }
-            };
+
+                if !broke_j {
+                    broke_i = true;
+                    break;
+                }
+            }
+
+            if broke_i {
+                // go along this plane
+            }
+            else {
+                // go along the crease
+                if num_planes != 2 {
+                    break;
+                }
+
+                let dir = Vector3::cross(&planes[0], &planes[1]);
+                let d = Vector3::dot(&dir, &cur_velocity);
+                cur_velocity = dir * d;
+            }
+
+            if Vector3::dot(&cur_velocity, velocity) < 0.0 {
+                break;
+            }
         }
 
-        return cur_pos;
+        cur_pos
     }
 
     pub fn tick(self: &mut Self) {
         const DELTA: f32 = 1.0 / 60.0;
+
+        self.frame = self.frame.wrapping_add(1);
 
         vdp::clear_color(Color32::new(0, 0, 0, 255));
         vdp::clear_depth(1.0);
@@ -163,10 +222,10 @@ impl GameState {
         let fwd = Vector3::new(fwd.x, fwd.y, fwd.z);
         let right = Vector3::new(right.x, right.y, right.z);
 
-        let camera_delta = (ly * fwd * 100.0 * DELTA) + (lx * right * 100.0 * DELTA);
+        let camera_delta = (ly * fwd * 100.0) + (lx * right * 100.0);
         let collision_box = Vector3::new(15.0, 15.0, 15.0);
 
-        self.camera_position = self.trace_move(&self.camera_position, &camera_delta, Some(&collision_box));
+        self.camera_position = self.trace_move(&self.camera_position, &camera_delta, DELTA, collision_box);
 
         let cam_proj = Matrix4x4::projection_perspective(640.0 / 480.0, (60.0_f32).to_radians(), 10.0, 10000.0);
 
