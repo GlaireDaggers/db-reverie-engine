@@ -16,3 +16,5 @@ Outside of the usual `dbsdk-cli` build tool you'd use for a Dreambox game, it al
 - content/env should contain: sky1bk.ktx, sky1ft.ktx, sky1up.ktx, sky1dn.ktx, sky1lf.ktx, sky1rt.ktx (DXT1 format)
 - content/maps should contain: demo1.bsp
 - content/textures should contain: any texture referenced by demo1.bsp (with .ktx extension, DXT1 format) (technically not necessary to boot, you'll just get a ton of warnings and everything will show an error-texture placeholder instead)
+
+(I'll happily send over the files I use for testing if you wanna DM me on Discord: `glairedaggers`)
