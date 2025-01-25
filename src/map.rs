@@ -5,7 +5,7 @@ use dbsdk_rs::{db::log, field_offset::offset_of, math::{Matrix4x4, Quaternion, V
 use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, SURF_NODRAW, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common};
 
 const DEBUG_DRAW_LM: bool = false;
-const DIST_EPSILON: f32 = 0.03125;
+const DIST_EPSILON: f32 = 0.01;
 
 pub struct BspMap {
     pub file: BspFile,
@@ -457,7 +457,7 @@ impl BspMap {
         }
     }
 
-    fn trace_brush(self: &Self, brush_idx: usize, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>, trace: &mut Trace) {
+    fn trace_brush(self: &Self, brush_idx: usize, start: &Vector3, end: &Vector3, frac_adj: f32, box_extents: Option<&Vector3>, trace: &mut Trace) {
         let brush = &self.file.brush_lump.brushes[brush_idx];
 
         if brush.num_brush_sides == 0 {
@@ -465,7 +465,7 @@ impl BspMap {
         }
 
         let mut hitplane = -1;
-        let mut enterfrac = -1.0;
+        let mut enterfrac = f32::MIN;
         let mut exitfrac = 1.0;
         let mut startout = false;
         let mut getout = false;
@@ -533,18 +533,18 @@ impl BspMap {
         }
 
         if enterfrac < exitfrac {
-            if enterfrac > -1.0 && enterfrac < trace.fraction {
+            if enterfrac > f32::MIN && enterfrac < trace.fraction {
                 if enterfrac < 0.0 {
                     enterfrac = 0.0;
                 }
 
-                trace.fraction = enterfrac;
+                trace.fraction = enterfrac + frac_adj;
                 trace.plane = hitplane;
             }
         }
     }
 
-    fn trace_leaf(self: &Self, leaf_index: usize, checked_brush: &mut HashSet<u16>, content_mask: u32, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>, trace: &mut Trace) {
+    fn trace_leaf(self: &Self, leaf_index: usize, checked_brush: &mut HashSet<u16>, content_mask: u32, start: &Vector3, end: &Vector3, frac_adj: f32, box_extents: Option<&Vector3>, trace: &mut Trace) {
         let leaf = &self.file.leaf_lump.leaves[leaf_index];
 
         if leaf.contents & content_mask == 0 {
@@ -567,21 +567,21 @@ impl BspMap {
                 return;
             }
 
-            self.trace_brush(brush_idx as usize, start, end, box_extents, trace);
+            self.trace_brush(brush_idx as usize, start, end, frac_adj, box_extents, trace);
 
-            if trace.fraction == 0.0 {
+            if trace.fraction <= 0.0 {
                 return;
             }
         }
     }
 
-    fn recursive_trace(self: &Self, node_idx: i32, checked_brush: &mut HashSet<u16>, content_mask: u32, p1f: f32, p2f: f32, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>, trace: &mut Trace) {
+    fn recursive_trace(self: &Self, node_idx: i32, checked_brush: &mut HashSet<u16>, content_mask: u32, p1f: f32, p2f: f32, start: &Vector3, end: &Vector3, frac_adj: f32, box_extents: Option<&Vector3>, trace: &mut Trace) {
         if trace.fraction <= p1f {
             return;
         }
         
         if node_idx < 0 {
-            self.trace_leaf((-node_idx - 1) as usize, checked_brush, content_mask, start, end, box_extents, trace);
+            self.trace_leaf((-node_idx - 1) as usize, checked_brush, content_mask, start, end, frac_adj, box_extents, trace);
             return;
         }
 
@@ -648,21 +648,24 @@ impl BspMap {
         };
 
         if t1 >= offset && t2 >= offset {
-            self.recursive_trace(node.front_child, checked_brush, content_mask, p1f, p2f, start, end, box_extents, trace);
+            self.recursive_trace(node.front_child, checked_brush, content_mask, p1f, p2f, start, end, frac_adj, box_extents, trace);
             return;
         }
 
         if t1 < -offset && t2 < -offset {
-            self.recursive_trace(node.back_child, checked_brush, content_mask, p1f, p2f, start, end, box_extents, trace);
+            self.recursive_trace(node.back_child, checked_brush, content_mask, p1f, p2f, start, end, frac_adj, box_extents, trace);
             return;
         }
 
-        let (side, frac2, frac) = if t1 < t2 {
+        self.recursive_trace(node.front_child, checked_brush, content_mask, p1f, p2f, start, end, frac_adj, box_extents, trace);
+        self.recursive_trace(node.back_child, checked_brush, content_mask, p1f, p2f, start, end, frac_adj, box_extents, trace);
+
+        /*let (side, frac2, frac) = if t1 < t2 {
             let idist = 1.0 / (t1 - t2);
             (
                 true,
                 (t1 + offset + DIST_EPSILON)*idist,
-                (t1 - offset + DIST_EPSILON)*idist
+                (t1 - offset - DIST_EPSILON)*idist
             )
         }
         else if t1 > t2 {
@@ -687,7 +690,7 @@ impl BspMap {
         let midf = p1f + ((p2f - p1f) * frac);
         let mid = *start + ((*end - *start) * frac);
 
-        self.recursive_trace(if side { node.back_child } else { node.front_child }, checked_brush, content_mask, p1f, midf, start, &mid, box_extents, trace);
+        self.recursive_trace(if side { node.back_child } else { node.front_child }, checked_brush, content_mask, p1f, midf, start, &mid, frac_adj, box_extents, trace);
 
         // go past the node
         let frac2 = frac2.clamp(0.0, 1.0);
@@ -695,7 +698,7 @@ impl BspMap {
         let midf = p1f + ((p2f - p1f) * frac2);
         let mid = *start + ((*end - *start) * frac2);
 
-        self.recursive_trace(if side { node.front_child } else { node.back_child }, checked_brush, content_mask, midf, p2f, &mid, end, box_extents, trace);
+        self.recursive_trace(if side { node.front_child } else { node.back_child }, checked_brush, content_mask, midf, p2f, &mid, end, frac_adj + frac2, box_extents, trace);*/
     }
 
     pub fn boxtrace(self: &Self, content_mask: u32, start: &Vector3, end: &Vector3, box_extents: Vector3) -> Trace {
@@ -709,7 +712,7 @@ impl BspMap {
             plane: -1
         };
 
-        self.recursive_trace(head_node, &mut HashSet::<u16>::new(), content_mask, 0.0, 1.0, start, end, Some(&box_extents), &mut trace_trace);
+        self.recursive_trace(head_node, &mut HashSet::<u16>::new(), content_mask, 0.0, 1.0, start, end, 0.0, Some(&box_extents), &mut trace_trace);
 
         if trace_trace.fraction == 1.0 {
             trace_trace.end_pos = *end;

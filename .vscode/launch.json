@@ -5,10 +5,13 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "type": "node-terminal",
+            "name": "(gdb) Launch",
+            "preLaunchTask": "build",
+            "type": "lldb",
             "request": "launch",
-            "name": "Launch",
-            "command": "${workspaceFolder}/run.sh"
+            "program": "${userHome}/.config/itch/apps/dreambox/dreambox",
+            "args": [ "--wasm-debug", "-f", "${workspaceFolder}/build/debug.iso" ],
+            "cwd": "${userHome}/.config/itch/apps/dreambox/",
         }
     ]
 }

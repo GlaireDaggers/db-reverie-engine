@@ -3,7 +3,7 @@ extern crate byteorder;
 extern crate lazy_static;
 extern crate ktx;
 
-use std::{ops::Mul, sync::Mutex};
+use std::{collections::HashSet, ops::Mul, sync::Mutex};
 
 use asset_loader::load_texture;
 use bsp_file::{BspFile, MASK_SOLID};
@@ -28,6 +28,13 @@ struct GameState {
     map: BspMap,
     env: Option<[Texture;6]>,
     frame: u32,
+}
+
+struct Vec3(Vector3);
+impl std::fmt::Display for Vec3 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}, {}, {})", self.0.x, self.0.y, self.0.z)
+    }
 }
 
 impl GameState {
@@ -89,8 +96,7 @@ impl GameState {
 
     fn trace_move(self: &Self, start_pos: &Vector3, velocity: &Vector3, delta: f32, box_extents: Vector3) -> Vector3 {
         const MAX_CLIP_PLANES: usize = 8;
-        const NUM_ITERATIONS: usize = 4;
-        const STOP_EPSILON: f32 = 0.1;
+        const NUM_ITERATIONS: usize = 8;
 
         let mut cur_pos = *start_pos;
         let mut cur_velocity = *velocity;
@@ -104,20 +110,19 @@ impl GameState {
             let trace = self.map.boxtrace(MASK_SOLID, &cur_pos, &end, box_extents);
 
             if trace.all_solid {
-                log(format!("STUCK {}", self.frame).as_str());
+                log(format!("STUCK AT {}, {}, {}", cur_pos.x, cur_pos.y, cur_pos.z).as_str());
                 return cur_pos;
             }
 
             if trace.fraction > 0.0 {
-                cur_pos = trace.end_pos;
                 num_planes = 0;
+                cur_pos = trace.end_pos;
+                remaining_delta -= remaining_delta * trace.fraction;
             }
 
             if trace.fraction == 1.0 {
                 break;
             }
-
-            remaining_delta -= remaining_delta * trace.fraction;
 
             if num_planes >= MAX_CLIP_PLANES {
                 break;
@@ -132,18 +137,6 @@ impl GameState {
                 // clip velocity to plane
                 let backoff = Vector3::dot(&cur_velocity, &planes[i]) * 1.01;
                 cur_velocity = cur_velocity - (planes[i] * backoff);
-
-                if cur_velocity.x.abs() < STOP_EPSILON {
-                    cur_velocity.x = 0.0;
-                }
-
-                if cur_velocity.y.abs() < STOP_EPSILON {
-                    cur_velocity.y = 0.0;
-                }
-
-                if cur_velocity.z.abs() < STOP_EPSILON {
-                    cur_velocity.z = 0.0;
-                }
 
                 let mut broke_j = false;
                 for j in 0..num_planes {
@@ -173,10 +166,6 @@ impl GameState {
                 let dir = Vector3::cross(&planes[0], &planes[1]);
                 let d = Vector3::dot(&dir, &cur_velocity);
                 cur_velocity = dir * d;
-            }
-
-            if Vector3::dot(&cur_velocity, velocity) < 0.0 {
-                break;
             }
         }
 
