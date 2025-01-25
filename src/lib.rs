@@ -95,14 +95,13 @@ impl GameState {
     }
 
     fn trace_move(self: &Self, start_pos: &Vector3, velocity: &Vector3, delta: f32, box_extents: Vector3) -> Vector3 {
-        const MAX_CLIP_PLANES: usize = 8;
         const NUM_ITERATIONS: usize = 8;
 
         let mut cur_pos = *start_pos;
         let mut cur_velocity = *velocity;
         let mut remaining_delta = delta;
 
-        let mut planes: [Vector3; MAX_CLIP_PLANES] = [Vector3::zero(); MAX_CLIP_PLANES];
+        let mut planes: [Vector3; NUM_ITERATIONS] = [Vector3::zero(); NUM_ITERATIONS];
         let mut num_planes: usize = 0;
 
         for _iter in 0..NUM_ITERATIONS {
@@ -121,10 +120,6 @@ impl GameState {
             }
 
             if trace.fraction == 1.0 {
-                break;
-            }
-
-            if num_planes >= MAX_CLIP_PLANES {
                 break;
             }
 
