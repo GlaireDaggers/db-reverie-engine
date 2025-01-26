@@ -35,6 +35,7 @@ fn draw_env_quad(tex: &Texture, rotation: &Quaternion, camera_view: &Matrix4x4, 
 }
 
 pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<[Texture;6]>, world: &mut World) {
+    let mut camera_index = 0;
     for (_, (transform, camera)) in world.query_mut::<(&Transform3D, &Camera)>() {
         // build view & projection matrices
         let mut cam_rot_inv = transform.rotation;
@@ -75,13 +76,19 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
             }
         };
 
+        // retrieve map renderer for camera
+        map_data.update_renderer_cache(camera_index);
+        let renderer = &mut map_data.map_renderers[camera_index];
+
         // update with new camera position
-        map_data.map_renderer.update(&map_data.map, &transform.position);
+        renderer.update(&map_data.map, &map_data.map_textures, &transform.position);
 
         // draw opaque geometry
-        map_data.map_renderer.draw_opaque(&map_data.map, time.total_time, &cam_view, &cam_proj);
+        renderer.draw_opaque(&map_data.map, &map_data.map_textures, time.total_time, &cam_view, &cam_proj);
 
         // draw transparent geometry
-        map_data.map_renderer.draw_transparent(&map_data.map, time.total_time, &cam_view, &cam_proj);
+        renderer.draw_transparent(&map_data.map, &map_data.map_textures, time.total_time, &cam_view, &cam_proj);
+        
+        camera_index += 1;
     }
 }

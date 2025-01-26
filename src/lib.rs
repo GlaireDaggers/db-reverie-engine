@@ -8,11 +8,11 @@ use std::sync::Mutex;
 
 use asset_loader::load_env;
 use bsp_file::BspFile;
-use bsp_renderer::BspMapRenderer;
+use bsp_renderer::{BspMapRenderer, BspMapTextures};
 use component::{camera::Camera, flycam::FlyCam, fpview::FPView, playerinput::PlayerInput, transform3d::Transform3D};
 use hecs::World;
 use lazy_static::lazy_static;
-use dbsdk_rs::{db, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::Vector3, vdp::{self, Texture}};
+use dbsdk_rs::{db::{self, log}, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::Vector3, vdp::{self, Texture}};
 use system::{flycam_system::flycam_system_update, fpview_system::{fpview_input_system_update, fpview_transform_system_update}, render_system::render_system};
 
 pub mod common;
@@ -38,7 +38,8 @@ pub struct InputState {
 
 pub struct MapData {
     pub map: BspFile,
-    pub map_renderer: BspMapRenderer,
+    pub map_textures: BspMapTextures,
+    pub map_renderers: Vec<BspMapRenderer>,
 }
 
 #[derive(Default)]
@@ -60,12 +61,20 @@ impl MapData {
         db::log(format!("Loading map: {}", map_name).as_str());
         let mut bsp_file = FileStream::open(format!("/cd/content/maps/{}.bsp", map_name).as_str(), FileMode::Read).unwrap();
         let bsp = BspFile::new(&mut bsp_file);
-        let bsp_renderer = BspMapRenderer::new(&bsp);
+        let bsp_textures = BspMapTextures::new(&bsp);
         db::log("Map loaded");
 
         MapData {
             map: bsp,
-            map_renderer: bsp_renderer
+            map_textures: bsp_textures,
+            map_renderers: Vec::new()
+        }
+    }
+
+    pub fn update_renderer_cache(self: &mut Self, index: usize) {
+        while self.map_renderers.len() <= index {
+            log(format!("Allocating map renderer for camera {}", index).as_str());
+            self.map_renderers.push(BspMapRenderer::new(&self.map));
         }
     }
 }

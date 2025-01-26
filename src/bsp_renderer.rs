@@ -4,28 +4,29 @@ use dbsdk_rs::{db::log, field_offset::offset_of, math::{Matrix4x4, Vector2, Vect
 
 use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, SURF_NODRAW, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common};
 
+// TODO: not sure how viable it is memory-wise to have one lightmap atlas per renderer/camera
+// For now probably not worth worrying about until splitscreen support is actually needed
+
+pub struct BspMapTextures {
+    loaded_textures: Vec<Option<Texture>>,
+    tex_ids: Vec<usize>,
+    err_tex: Texture,
+    opaque_meshes: Vec<usize>,
+    transp_meshes: Vec<usize>,
+}
+
 pub struct BspMapRenderer {
     vis: Vec<bool>,
     prev_leaf: i32,
     meshes: Vec<Vec<PackedVertex>>,
     lm_uvs: Vec<Vec<Vector2>>,
     visible_leaves: Vec<bool>,
-    loaded_textures: Vec<Option<Texture>>,
-    tex_ids: Vec<usize>,
-    err_tex: Texture,
     lm_atlas: Texture,
     drawn_faces: Vec<bool>,
-    opaque_meshes: Vec<usize>,
-    transp_meshes: Vec<usize>,
 }
 
-impl BspMapRenderer {
-    pub fn new(bsp_file: &BspFile) -> BspMapRenderer {
-        let num_clusters = bsp_file.vis_lump.clusters.len();
-        let num_leaves = bsp_file.leaf_lump.leaves.len();
-        let num_textures = bsp_file.tex_info_lump.textures.len();
-        let num_faces = bsp_file.face_lump.faces.len();
-
+impl BspMapTextures {
+    pub fn new(bsp_file: &BspFile) -> BspMapTextures {
         // load unique textures
         let mut loaded_tex_names: Vec<&str> = Vec::new();
         let mut loaded_textures: Vec<Option<Texture>> = Vec::new();
@@ -39,8 +40,6 @@ impl BspMapRenderer {
             Color32::new(255, 0, 255, 255), Color32::new(0, 0, 0, 255),
             Color32::new(0, 0, 0, 255), Color32::new(255, 0, 255, 255)
         ]);
-
-        let lm_atlas = Texture::new(512, 512, false, vdp::TextureFormat::RGB565).unwrap();
 
         for (i, tex_info) in bsp_file.tex_info_lump.textures.iter().enumerate() {
             if tex_info.flags & SURF_TRANS33 != 0 || tex_info.flags & SURF_TRANS66 != 0 {
@@ -73,6 +72,25 @@ impl BspMapRenderer {
             }
         }
 
+        BspMapTextures {
+            loaded_textures,
+            tex_ids,
+            err_tex,
+            opaque_meshes,
+            transp_meshes
+        }
+    }
+}
+
+impl BspMapRenderer {
+    pub fn new(bsp_file: &BspFile) -> BspMapRenderer {
+        let num_clusters = bsp_file.vis_lump.clusters.len();
+        let num_leaves = bsp_file.leaf_lump.leaves.len();
+        let num_textures = bsp_file.tex_info_lump.textures.len();
+        let num_faces = bsp_file.face_lump.faces.len();
+
+        let lm_atlas = Texture::new(512, 512, false, vdp::TextureFormat::RGB565).unwrap();
+
         BspMapRenderer {
             vis: vec![false;num_clusters],
             visible_leaves: vec![false;num_leaves],
@@ -80,17 +98,12 @@ impl BspMapRenderer {
             lm_uvs: vec![Vec::new();num_textures],
             drawn_faces: vec![false;num_faces],
             prev_leaf: -1,
-            tex_ids,
-            loaded_textures,
-            err_tex,
             lm_atlas,
-            opaque_meshes,
-            transp_meshes,
         }
     }
 
     /// Update BSP renderer with new camera position. Recalculates visible leaves & rebuilds geometry and lightmap atlas
-    pub fn update(self: &mut Self, bsp: &BspFile, position: &Vector3) {
+    pub fn update(self: &mut Self, bsp: &BspFile, textures: &BspMapTextures, position: &Vector3) {
         let leaf_index = bsp.calc_leaf_index(position);
 
         // if camera enters a new cluster, unpack new cluster's visibility info & build geometry
@@ -272,8 +285,8 @@ impl BspMapRenderer {
                             let lm_b = (((tex_b - tex_min) / (tex_max - tex_min)) * lm_region_scale) + lm_region_offset;
                             let lm_c = (((tex_c - tex_min) / (tex_max - tex_min)) * lm_region_scale) + lm_region_offset;
 
-                            let tex_id = self.tex_ids[tex_idx];
-                            match &self.loaded_textures[tex_id] {
+                            let tex_id = textures.tex_ids[tex_idx];
+                            match &textures.loaded_textures[tex_id] {
                                 Some(v) => {
                                     let sc = Vector2::new(1.0 / v.width as f32, 1.0 / v.height as f32);
                                     tex_a = tex_a * sc;
@@ -324,7 +337,7 @@ impl BspMapRenderer {
     }
 
     /// After updating a map, call this to render opaque geometry
-    pub fn draw_opaque(self: &Self, bsp: &BspFile, animation_time: f32, camera_view: &Matrix4x4, camera_proj: &Matrix4x4) {
+    pub fn draw_opaque(self: &Self, bsp: &BspFile, textures: &BspMapTextures, animation_time: f32, camera_view: &Matrix4x4, camera_proj: &Matrix4x4) {
         // build view + projection matrix
         Matrix4x4::load_identity_simd();
         Matrix4x4::mul_simd(camera_view);
@@ -338,18 +351,18 @@ impl BspMapRenderer {
         vdp::set_culling(true);
         vdp::blend_equation(vdp::BlendEquation::Add);
 
-        for i in &self.opaque_meshes {
+        for i in &textures.opaque_meshes {
             let m = &self.meshes[*i];
             let lm_uvs = &self.lm_uvs[*i];
 
-            let tex_id = self.tex_ids[*i];
-            match &self.loaded_textures[tex_id] {
+            let tex_id = textures.tex_ids[*i];
+            match &textures.loaded_textures[tex_id] {
                 Some(v) => {
                     vdp::bind_texture(Some(v));
                     vdp::set_sample_params(vdp::TextureFilter::Linear, vdp::TextureWrap::Repeat, vdp::TextureWrap::Repeat);
                 }
                 None => {
-                    vdp::bind_texture(Some(&self.err_tex));
+                    vdp::bind_texture(Some(&textures.err_tex));
                     vdp::set_sample_params(vdp::TextureFilter::Nearest, vdp::TextureWrap::Repeat, vdp::TextureWrap::Repeat);
                 }
             };
@@ -387,7 +400,7 @@ impl BspMapRenderer {
     }
 
     /// After updating a map, call this to render transparent geometry
-    pub fn draw_transparent(self: &Self, bsp: &BspFile, animation_time: f32, camera_view: &Matrix4x4, camera_proj: &Matrix4x4) {
+    pub fn draw_transparent(self: &Self, bsp: &BspFile, textures: &BspMapTextures, animation_time: f32, camera_view: &Matrix4x4, camera_proj: &Matrix4x4) {
         // build view + projection matrix
         Matrix4x4::load_identity_simd();
         Matrix4x4::mul_simd(camera_view);
@@ -405,17 +418,17 @@ impl BspMapRenderer {
         vdp::depth_write(false);
         vdp::blend_func(vdp::BlendFactor::SrcAlpha, vdp::BlendFactor::OneMinusSrcAlpha);
 
-        for i in &self.transp_meshes {
+        for i in &textures.transp_meshes {
             let m = &self.meshes[*i];
 
-            let tex_id = self.tex_ids[*i];
-            match &self.loaded_textures[tex_id] {
+            let tex_id = textures.tex_ids[*i];
+            match &textures.loaded_textures[tex_id] {
                 Some(v) => {
                     vdp::bind_texture(Some(v));
                     vdp::set_sample_params(vdp::TextureFilter::Linear, vdp::TextureWrap::Repeat, vdp::TextureWrap::Repeat);
                 }
                 None => {
-                    vdp::bind_texture(Some(&self.err_tex));
+                    vdp::bind_texture(Some(&textures.err_tex));
                     vdp::set_sample_params(vdp::TextureFilter::Nearest, vdp::TextureWrap::Repeat, vdp::TextureWrap::Repeat);
                 }
             };
