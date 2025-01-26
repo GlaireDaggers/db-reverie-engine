@@ -50,3 +50,14 @@ pub fn load_texture(path: &str) -> Result<vdp::Texture, IOError> {
 
     Ok(tex)
 }
+
+pub fn load_env(env_name: &str) -> [vdp::Texture;6] {
+    let env_ft = load_texture(format!("/cd/content/env/{}1ft.ktx", env_name).as_str()).unwrap();
+    let env_bk = load_texture(format!("/cd/content/env/{}1bk.ktx", env_name).as_str()).unwrap();
+    let env_lf = load_texture(format!("/cd/content/env/{}1lf.ktx", env_name).as_str()).unwrap();
+    let env_rt = load_texture(format!("/cd/content/env/{}1rt.ktx", env_name).as_str()).unwrap();
+    let env_up = load_texture(format!("/cd/content/env/{}1up.ktx", env_name).as_str()).unwrap();
+    let env_dn = load_texture(format!("/cd/content/env/{}1dn.ktx", env_name).as_str()).unwrap();
+
+    [env_ft, env_bk, env_lf, env_rt, env_up, env_dn]
+}
