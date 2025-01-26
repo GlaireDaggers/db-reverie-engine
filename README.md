@@ -2,13 +2,7 @@
 A 3D BSP-based game engine written in Rust for the DreamBox fantasy console
 
 # Current Status
-Broken 😔
-
-Trying to port Quake 2 movement code - the bulk of the trace functions are in map.rs, and the trace movement function is in lib.rs
-Beware, the code is horrible and not at all idiomatic Rust.
-
-Current problem: player tends to "pop" towards walls while sliding along them, and can frequently get stuck in a solid and be unable to move
-(for reference: what I am effectively trying to port from the Quake 2 source are CM_RecursiveHullCheck from cmodel.c, and PM_StepSlideMove_ from pmove.c)
+It's got a moving fly cam with collision detection! How neat!
 
 # How to build
 Outside of the usual `dbsdk-cli` build tool you'd use for a Dreambox game, it also expects some things to be present in the content folder:
