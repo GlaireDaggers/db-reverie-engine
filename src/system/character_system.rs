@@ -37,7 +37,7 @@ pub fn character_input_update(input: &InputState, world: &mut World) {
     for (_, (state, transform, _)) in world.query_mut::<(&mut CharacterInputState, &Transform3D, &PlayerInput)>() {
         let rot_matrix = Matrix4x4::rotation(transform.rotation);
 
-        let fwd = rot_matrix * Vector4::new(0.0, -1.0, 0.0, 0.0);
+        let fwd = rot_matrix * Vector4::new(0.0, 1.0, 0.0, 0.0);
         let right = rot_matrix * Vector4::new(1.0, 0.0, 0.0, 0.0);
 
         let fwd = Vector3::new(fwd.x, fwd.y, fwd.z);

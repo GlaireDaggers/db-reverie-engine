@@ -12,6 +12,7 @@ dbsdk-rs = "0.1.13"
 hecs = "0.10.5"
 ktx = "0.3.2"
 lazy_static = "1.5.0"
+regex = "1.11.1"
 
 [profile.dev]
 opt-level = 0

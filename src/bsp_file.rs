@@ -1,7 +1,8 @@
-use std::io::Seek;
+use std::{collections::HashMap, io::Seek};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use dbsdk_rs::{db::log, math::Vector3};
+use regex::Regex;
 
 const BSP_MAGIC: u32 = 0x50534249;
 const BSP_VERSION: u32 = 38;
@@ -145,6 +146,10 @@ pub struct SubModel {
     pub _num_faces: u32,
 }
 
+pub struct EntityLump {
+    pub entities: String
+}
+
 pub struct VertexLump {
     pub vertices: Vec<Vector3>
 }
@@ -204,6 +209,58 @@ pub struct SubModelLump {
 
 pub struct LightmapLump {
     pub lm: Vec<u16>
+}
+
+impl EntityLump {
+    pub fn new<R: Seek + ReadBytesExt>(reader: &mut R, info: &BspLumpInfo) -> EntityLump {
+        reader.seek(std::io::SeekFrom::Start(info.offset as u64)).unwrap();
+
+        let mut data: Vec<u8> = vec![0;info.length as usize];
+        reader.read_exact(&mut data).unwrap();
+
+        let mut len = 0;
+        for val in &data {
+            if *val == 0 {
+                break;
+            }
+            len += 1;
+        }
+
+        let slice = &data[0..len];
+        let entities = unsafe { std::str::from_utf8_unchecked(slice).to_owned() };
+
+        EntityLump {
+            entities
+        }
+    }
+
+    pub fn parse<F>(self: &Self, mut f: F) where F: FnMut(HashMap<&str, &str>) {
+        let re = Regex::new("(\"(.*)\"[ \t]+\"(.*)\")").unwrap();
+
+        // find ranges of data between { and }
+        let mut slices = Vec::new();
+        let mut start = 0;
+        for (idx, v) in self.entities.as_bytes().iter().enumerate() {
+            if *v == b'{' {
+                start = idx + 1;
+            }
+            else if *v == b'}' {
+                slices.push((start, idx - 1));
+            }
+        }
+
+        // parse key value pairs
+        for (start, end) in slices {
+            let entitydata = &self.entities[start..end];
+            
+            let mut map = HashMap::new();
+            for (_, [_, propname, propval]) in re.captures_iter(entitydata).map(|c| c.extract()) {
+                map.insert(propname, propval);
+            }
+
+            f(map);
+        }
+    }
 }
 
 impl VertexLump {
@@ -631,6 +688,7 @@ impl SubModelLump {
 }
 
 pub struct BspFile {
+    pub entity_lump: EntityLump,
     pub vertex_lump: VertexLump,
     pub edge_lump: EdgeLump,
     pub face_lump: FaceLump,
@@ -671,6 +729,7 @@ impl BspFile {
         }
 
         // read lumps
+        let entity_lump = EntityLump::new(reader, &bsp_lumps[0]);
         let plane_lump = PlaneLump::new(reader, &bsp_lumps[1]);
         let vertex_lump = VertexLump::new(reader, &bsp_lumps[2]);
         let vis_lump = VisLump::new(reader, &bsp_lumps[3]);
@@ -688,6 +747,7 @@ impl BspFile {
         let brush_side_lump = BrushSideLump::new(reader, &bsp_lumps[15]);
 
         BspFile {
+            entity_lump,
             vertex_lump,
             edge_lump,
             face_lump,

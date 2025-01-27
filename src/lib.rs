@@ -3,6 +3,7 @@ extern crate byteorder;
 extern crate lazy_static;
 extern crate ktx;
 extern crate hecs;
+extern crate regex;
 
 use std::sync::Mutex;
 
@@ -12,7 +13,7 @@ use bsp_renderer::{BspMapRenderer, BspMapTextures};
 use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterController, fpview::FPView, playerinput::PlayerInput, transform3d::Transform3D};
 use hecs::World;
 use lazy_static::lazy_static;
-use dbsdk_rs::{db::{self, log}, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::Vector3, vdp::{self, Texture}};
+use dbsdk_rs::{db::{self, log}, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::{Quaternion, Vector3}, vdp::{self, Texture}};
 use system::{character_system::{character_apply_input_update, character_init, character_input_update, character_rotation_update, character_update}, flycam_system::flycam_system_update, fpcam_system::fpcam_update, fpview_system::{fpview_eye_update, fpview_input_system_update}, render_system::render_system};
 
 pub mod common;
@@ -20,6 +21,7 @@ pub mod bsp_file;
 pub mod bsp_renderer;
 pub mod bsp_collision;
 pub mod asset_loader;
+pub mod parse_utils;
 
 pub mod component;
 pub mod system;
@@ -88,10 +90,32 @@ impl GameState {
         let map_data = MapData::load_map("demo1");
         let env = load_env("sky");
 
+        let mut player_start_pos = Vector3::zero();
+        let mut player_start_rot = 0.0;
+
+        map_data.map.entity_lump.parse(|entity_data| {
+            match entity_data["classname"] {
+                "info_player_start" => {
+                    let pos = entity_data["origin"];
+                    let angle = entity_data["angle"];
+
+                    player_start_pos = parse_utils::parse_vec3(pos);
+                    player_start_rot = angle.parse::<f32>().unwrap() + 180.0;
+                }
+                "worldspawn" => {
+                    for (key, val) in entity_data {
+                        log(format!("worldspawn: {} = {}", key, val).as_str());
+                    }
+                }
+                _ => {
+                }
+            }
+        });
+
         // spawn entities
         let player_entity = world.spawn((
-            Transform3D::default().with_position(Vector3::new(20.0, 0.0, 40.0)),
-            FPView::new(0.0, 0.0, 40.0),
+            Transform3D::default().with_position(player_start_pos),
+            FPView::new(-player_start_rot, 0.0, 40.0),
             CharacterController::default(),
             PlayerInput::new()
         ));

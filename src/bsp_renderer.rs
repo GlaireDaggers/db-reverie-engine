@@ -347,7 +347,7 @@ impl BspMapRenderer {
         let mut geo_buff: Vec<PackedVertex> = Vec::with_capacity(1024);
 
         // set up render state
-        vdp::set_winding(vdp::WindingOrder::CounterClockwise);
+        vdp::set_winding(vdp::WindingOrder::Clockwise);
         vdp::set_culling(true);
         vdp::blend_equation(vdp::BlendEquation::Add);
 
@@ -410,7 +410,7 @@ impl BspMapRenderer {
         let mut geo_buff: Vec<PackedVertex> = Vec::with_capacity(1024);
 
         // set up render state
-        vdp::set_winding(vdp::WindingOrder::CounterClockwise);
+        vdp::set_winding(vdp::WindingOrder::Clockwise);
         vdp::set_culling(true);
         vdp::blend_equation(vdp::BlendEquation::Add);
 
