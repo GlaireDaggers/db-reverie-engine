@@ -1,5 +1,7 @@
 use dbsdk_rs::vdp::Rectangle;
+use hecs::Entity;
 
+#[derive(Clone, Copy)]
 pub struct Camera {
     pub fov: f32,
     pub near: f32,
@@ -14,6 +16,19 @@ impl Camera {
             near: 10.0,
             far: 10000.0,
             viewport_rect: None
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct FPCamera {
+    pub follow_entity: Entity
+}
+
+impl FPCamera {
+    pub fn new(follow_entity: Entity) ->  FPCamera {
+        FPCamera {
+            follow_entity
         }
     }
 }

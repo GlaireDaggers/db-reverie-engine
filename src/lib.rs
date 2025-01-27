@@ -9,11 +9,11 @@ use std::sync::Mutex;
 use asset_loader::load_env;
 use bsp_file::BspFile;
 use bsp_renderer::{BspMapRenderer, BspMapTextures};
-use component::{camera::Camera, flycam::FlyCam, fpview::FPView, playerinput::PlayerInput, transform3d::Transform3D};
+use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterController, fpview::FPView, playerinput::PlayerInput, transform3d::Transform3D};
 use hecs::World;
 use lazy_static::lazy_static;
 use dbsdk_rs::{db::{self, log}, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::Vector3, vdp::{self, Texture}};
-use system::{flycam_system::flycam_system_update, fpview_system::{fpview_input_system_update, fpview_transform_system_update}, render_system::render_system};
+use system::{character_system::{character_apply_input_update, character_init, character_input_update, character_rotation_update, character_update}, flycam_system::flycam_system_update, fpcam_system::fpcam_update, fpview_system::{fpview_eye_update, fpview_input_system_update}, render_system::render_system};
 
 pub mod common;
 pub mod bsp_file;
@@ -34,6 +34,8 @@ pub struct InputState {
     pub move_y: f32,
     pub look_x: f32,
     pub look_y: f32,
+    pub crouch: bool,
+    pub jump: bool,
 }
 
 pub struct MapData {
@@ -87,12 +89,17 @@ impl GameState {
         let env = load_env("sky");
 
         // spawn entities
+        let player_entity = world.spawn((
+            Transform3D::default().with_position(Vector3::new(20.0, 0.0, 40.0)),
+            FPView::new(0.0, 0.0, 40.0),
+            CharacterController::default(),
+            PlayerInput::new()
+        ));
+
         world.spawn((
-            Transform3D::default().with_position(Vector3::new(0.0, 0.0, 20.0)),
+            Transform3D::default(),
             Camera::default(),
-            FPView::default(),
-            PlayerInput::new(),
-            FlyCam::default()
+            FPCamera::new(player_entity)
         ));
 
         GameState {
@@ -114,6 +121,8 @@ impl GameState {
             move_y: gp_state.left_stick_y as f32 / i16::MAX as f32,
             look_x: gp_state.right_stick_x as f32 / i16::MAX as f32,
             look_y: gp_state.right_stick_y as f32 / i16::MAX as f32,
+            crouch: gp_state.is_pressed(gamepad::GamepadButton::B),
+            jump: gp_state.is_pressed(gamepad::GamepadButton::A)
         };
 
         // update time
@@ -121,11 +130,17 @@ impl GameState {
         self.time_data.total_time += DELTA;
 
         // update & render
-        fpview_input_system_update(&input_state, &mut self.world);
-        fpview_transform_system_update(&mut self.world);
+        fpview_input_system_update(&input_state, &self.time_data, &mut self.world);
+        character_init(&mut self.world);
+        character_rotation_update(&mut self.world);
+        character_input_update(&input_state, &mut self.world);
+        fpview_eye_update(&self.time_data, &mut self.world);
         match &mut self.map_data {
             Some(v) => {
+                character_apply_input_update(&self.time_data, v, &mut self.world);
+                character_update(&self.time_data, v, &mut self.world);
                 flycam_system_update(&input_state, &self.time_data, &v.map, &mut self.world);
+                fpcam_update(&mut self.world);
                 render_system(&self.time_data, v, &self.env, &mut self.world);
             }
             _ => {

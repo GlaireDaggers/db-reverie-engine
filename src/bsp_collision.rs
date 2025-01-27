@@ -1,9 +1,10 @@
 use std::collections::HashSet;
-use dbsdk_rs::{db::log, math::Vector3};
+use dbsdk_rs::math::Vector3;
 use crate::bsp_file::{BspFile, MASK_SOLID};
 
 const DIST_EPSILON: f32 = 0.01;
 
+#[derive(Clone, Copy)]
 pub struct Trace {
     pub all_solid: bool,
     pub start_solid: bool,
@@ -257,6 +258,23 @@ impl BspFile {
         self.recursive_trace(if side { node.front_child } else { node.back_child }, checked_brush, content_mask, midf, p2f, &mid, end, frac_adj + frac2, box_extents, trace);*/
     }
 
+    /// Checks if a given box overlaps collision shapes
+    pub fn box_check(self: &Self, content_mask: u32, start: &Vector3, box_extents: Vector3) -> bool {
+        let head_node = self.submodel_lump.submodels[0].headnode as i32;
+
+        let mut trace_trace = Trace {
+            all_solid: false,
+            start_solid: false,
+            fraction: 1.0,
+            end_pos: Vector3::zero(),
+            plane: -1
+        };
+
+        self.recursive_trace(head_node, &mut HashSet::<u16>::new(), content_mask, 0.0, 1.0, start, start, 0.0, Some(&box_extents), &mut trace_trace);
+
+        trace_trace.start_solid
+    }
+
     /// Sweeps a box shape through the world & returns information about what was hit and where, if any
     pub fn boxtrace(self: &Self, content_mask: u32, start: &Vector3, end: &Vector3, box_extents: Vector3) -> Trace {
         let head_node = self.submodel_lump.submodels[0].headnode as i32;
@@ -327,15 +345,16 @@ impl BspFile {
         return -cur_node - 1;
     }
 
-    /// Attempts to sweep a box through the world, sliding along any surfaces it hits and returning a new position and velocity
+    /// Attempts to sweep a box through the world, sliding along any surfaces it hits and returning a new position and velocity as well as trace hit information
     /// 
     /// # Arguments
     /// 
     /// * 'start_pos' - The current center point of the box shape
     /// * 'velocity' - The velocity of the box shape
     /// * 'delta' - The timestep of the movement (final sweep length is velocity times delta)
+    /// * 'allow_sliding' - Whether or not to allow sliding against hit surfaces
     /// * 'box_extents' - The extents of the box on each axis (half the box's total size)
-    pub fn trace_move(self: &Self, start_pos: &Vector3, velocity: &Vector3, delta: f32, box_extents: Vector3) -> (Vector3, Vector3) {
+    pub fn trace_move(self: &Self, start_pos: &Vector3, velocity: &Vector3, delta: f32, allow_sliding: bool, box_extents: Vector3) -> (Vector3, Vector3, Trace) {
         const NUM_ITERATIONS: usize = 8;
 
         let mut cur_pos = *start_pos;
@@ -345,13 +364,21 @@ impl BspFile {
         let mut planes: [Vector3; NUM_ITERATIONS] = [Vector3::zero(); NUM_ITERATIONS];
         let mut num_planes: usize = 0;
 
+        let mut ret_trace = Trace {
+            all_solid: false,
+            start_solid: false,
+            fraction: 1.0,
+            end_pos: Vector3::zero(),
+            plane: -1
+        };
+
         for _iter in 0..NUM_ITERATIONS {
             let end = cur_pos + (cur_velocity * remaining_delta);
             let trace = self.boxtrace(MASK_SOLID, &cur_pos, &end, box_extents);
 
             if trace.all_solid {
-                log(format!("STUCK AT {}, {}, {}", cur_pos.x, cur_pos.y, cur_pos.z).as_str());
-                return (cur_pos, Vector3::zero());
+                cur_velocity.z = 0.0; // don't build vertical velocity
+                return (cur_pos, cur_velocity, trace);
             }
 
             if trace.fraction > 0.0 {
@@ -359,8 +386,12 @@ impl BspFile {
                 cur_pos = trace.end_pos;
                 remaining_delta -= remaining_delta * trace.fraction;
             }
+            
+            if ret_trace.fraction == 1.0 {
+                ret_trace = trace;
+            }
 
-            if trace.fraction == 1.0 {
+            if trace.fraction == 1.0 || !allow_sliding {
                 break;
             }
 
@@ -405,6 +436,6 @@ impl BspFile {
             }
         }
 
-        (cur_pos, cur_velocity)
+        (cur_pos, cur_velocity, ret_trace)
     }
 }

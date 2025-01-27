@@ -3,3 +3,4 @@ pub mod camera;
 pub mod fpview;
 pub mod playerinput;
 pub mod flycam;
+pub mod charactercontroller;

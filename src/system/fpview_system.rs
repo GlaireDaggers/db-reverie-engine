@@ -1,13 +1,15 @@
-use dbsdk_rs::math::{Quaternion, Vector3};
 use hecs::World;
 
-use crate::{component::{fpview::FPView, playerinput::PlayerInput, transform3d::Transform3D}, InputState};
+use crate::{component::{charactercontroller::{CharacterController, CharacterState}, fpview::FPView, playerinput::PlayerInput}, InputState, TimeData};
+
+const LOOK_SPEED: f32 = 90.0;
+const CROUCH_SPEED: f32 = 120.0;
 
 /// System which allows player to control yaw/pitch of FPView
-pub fn fpview_input_system_update(input: &InputState, world: &mut World) {
+pub fn fpview_input_system_update(input: &InputState, time: &TimeData, world: &mut World) {
     for (_, (fpview, _)) in world.query_mut::<(&mut FPView, &PlayerInput)>() {
-        fpview.yaw += input.look_x * 45.0 * (1.0 / 60.0);
-        fpview.pitch -= input.look_y * 45.0 * (1.0 / 60.0);
+        fpview.yaw += input.look_x * LOOK_SPEED * time.delta_time;
+        fpview.pitch -= input.look_y * LOOK_SPEED * time.delta_time;
 
         if fpview.yaw < 0.0 {
             fpview.yaw += 360.0;
@@ -20,9 +22,20 @@ pub fn fpview_input_system_update(input: &InputState, world: &mut World) {
     }
 }
 
-/// System which translates yaw/pitch of FPView to a quaternion rotation on a Transform3D
-pub fn fpview_transform_system_update(world: &mut World) {
-    for (_, (fpview, transform)) in world.query_mut::<(&FPView, &mut Transform3D)>() {
-        transform.rotation = Quaternion::from_euler(Vector3::new(fpview.pitch.to_radians(), 0.0, fpview.yaw.to_radians()))
+/// System which updates eye offset of FPView
+pub fn fpview_eye_update(time: &TimeData, world: &mut World) {
+    for (_, (fpview, cc, cstate)) in world.query_mut::<(&mut FPView, &CharacterController, &CharacterState)>() {
+        let cur_height = fpview.eye_offset;
+        let target_height = if cstate.crouched {
+            cc.crouch_height - 5.0
+        }
+        else {
+            cc.main_height - 5.0
+        };
+
+        let height_delta = target_height - cur_height;
+        let height_delta = height_delta.abs().clamp(0.0, CROUCH_SPEED * time.delta_time) * height_delta.signum();
+
+        fpview.eye_offset = cur_height + height_delta;
     }
 }
