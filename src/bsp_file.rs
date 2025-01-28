@@ -1,8 +1,10 @@
 use std::{collections::HashMap, io::Seek};
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use dbsdk_rs::{db::log, math::Vector3};
+use dbsdk_rs::{math::Vector3, vdp::Color32};
 use regex::Regex;
+
+use crate::println;
 
 const BSP_MAGIC: u32 = 0x50534249;
 const BSP_VERSION: u32 = 38;
@@ -15,6 +17,8 @@ pub const SURF_TRANS33: u32 = 0x10;
 pub const SURF_TRANS66: u32 = 0x20;
 //pub const SURF_FLOW: u32    = 0x40;
 pub const SURF_NODRAW: u32  = 0x80;
+
+pub const SURF_NOLM: u32    = SURF_NODRAW | SURF_SKY | SURF_WARP | SURF_TRANS33 | SURF_TRANS66;
 
 pub const CONTENTS_SOLID: u32       = 1;
 pub const CONTENTS_WINDOW: u32      = 2;
@@ -42,24 +46,12 @@ fn read_vec3s<R: ReadBytesExt>(reader: &mut R) -> Vector3 {
     Vector3::new(x, y, z)
 }
 
-pub struct Color24 {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8
-}
+fn read_color24<R: ReadBytesExt>(reader: &mut R) -> Color32 {
+    let r = reader.read_u8().unwrap();
+    let g = reader.read_u8().unwrap();
+    let b = reader.read_u8().unwrap();
 
-impl Color24 {
-    pub fn read<R: ReadBytesExt>(reader: &mut R) -> Color24 {
-        let r = reader.read_u8().unwrap();
-        let g = reader.read_u8().unwrap();
-        let b = reader.read_u8().unwrap();
-
-        Color24 {
-            r,
-            g,
-            b
-        }
-    }
+    Color32::new(r, g, b, 255)
 }
 
 pub struct BspLumpInfo {
@@ -79,7 +71,8 @@ pub struct BspFace {
     pub first_edge: u32,
     pub num_edges: u16,
     pub texture_info: u16,
-    pub _lightmap_styles: [u8;4],
+    pub lightmap_styles: [u8;4],
+    pub num_lightmaps: usize,
     pub lightmap_offset: u32,
 }
 
@@ -103,8 +96,8 @@ pub struct Leaf {
     pub contents: u32,
     pub cluster: u16,
     pub _area: u16,
-    pub _bbox_min: Vector3,
-    pub _bbox_max: Vector3,
+    pub bbox_min: Vector3,
+    pub bbox_max: Vector3,
     pub first_leaf_face: u16,
     pub num_leaf_faces: u16,
     pub first_leaf_brush: u16,
@@ -138,12 +131,12 @@ pub struct VisCluster {
 }
 
 pub struct SubModel {
-    pub _mins: Vector3,
-    pub _maxs: Vector3,
-    pub _origin: Vector3,
+    pub mins: Vector3,
+    pub maxs: Vector3,
+    pub origin: Vector3,
     pub headnode: u32,
-    pub _first_face: u32,
-    pub _num_faces: u32,
+    pub first_face: u32,
+    pub num_faces: u32,
 }
 
 pub struct EntityLump {
@@ -208,7 +201,7 @@ pub struct SubModelLump {
 }
 
 pub struct LightmapLump {
-    pub lm: Vec<u16>
+    pub lm: Vec<Color32>
 }
 
 impl EntityLump {
@@ -320,8 +313,17 @@ impl FaceLump {
             ];
             let lightmap_offset = reader.read_u32::<LittleEndian>().unwrap();
 
+            let mut num_lightmaps = 0;
+
+            for ls in &lightmap_styles {
+                if *ls == 255 {
+                    break;
+                }
+                num_lightmaps += 1;
+            }
+
             faces.push(BspFace {
-                _plane: plane, _plane_side: plane_side, first_edge, num_edges, texture_info, _lightmap_styles: lightmap_styles, lightmap_offset
+                _plane: plane, _plane_side: plane_side, first_edge, num_edges, texture_info, lightmap_styles, num_lightmaps, lightmap_offset
             });
         }
 
@@ -375,7 +377,7 @@ impl NodeLump {
         let num_nodes = (info.length / 28) as usize;
         let mut nodes: Vec<Node> = Vec::with_capacity(num_nodes);
 
-        log(format!("Num nodes in node lump: {}", num_nodes).as_str());
+        println!("Num nodes in node lump: {}", num_nodes);
 
         for _ in 0..num_nodes {
             let plane = reader.read_u32::<LittleEndian>().unwrap();
@@ -410,7 +412,7 @@ impl LeafLump {
         let num_leaves = (info.length / 28) as usize;
         let mut leaves: Vec<Leaf> = Vec::with_capacity(num_leaves);
 
-        log(format!("Num leaves in leaf lump: {}", num_leaves).as_str());
+        println!("Num leaves in leaf lump: {}", num_leaves);
 
         for _ in 0..num_leaves {
             let brush_or = reader.read_u32::<LittleEndian>().unwrap();
@@ -427,8 +429,8 @@ impl LeafLump {
                 contents: brush_or,
                 cluster,
                 _area: area,
-                _bbox_min: bbox_min,
-                _bbox_max: bbox_max,
+                bbox_min,
+                bbox_max,
                 first_leaf_face,
                 num_leaf_faces,
                 first_leaf_brush,
@@ -485,7 +487,7 @@ impl TexInfoLump {
         let num_textures = (info.length / 76) as usize;
         let mut textures: Vec<TexInfo> = Vec::with_capacity(num_textures);
 
-        log(format!("Num textures in tex info lump: {}", num_textures).as_str());
+        println!("Num textures in tex info lump: {}", num_textures);
 
         for _ in 0..num_textures {
             let u_axis = read_vec3f(reader);
@@ -538,7 +540,7 @@ impl VisLump {
 
         let mut clusters: Vec<VisCluster> = Vec::with_capacity(num_clusters);
 
-        log(format!("Num clusters in vis lump: {}", num_clusters).as_str());
+        println!("Num clusters in vis lump: {}", num_clusters);
 
         for _ in 0..num_clusters {
             let pvs = reader.read_u32::<LittleEndian>().unwrap();
@@ -592,20 +594,14 @@ impl LightmapLump {
         reader.seek(std::io::SeekFrom::Start(info.offset as u64)).unwrap();
 
         let num_px = (info.length / 3) as usize;
-        let mut lm: Vec<u16> = Vec::with_capacity(num_px);
+        let mut lm: Vec<Color32> = Vec::with_capacity(num_px);
 
         for _ in 0..num_px {
-            let col = Color24::read(reader);
-            // jesus this lightmap is dark
-            let r = ((col.r as i32) << 1).clamp(0, 255);
-            let g = ((col.g as i32) << 1).clamp(0, 255);
-            let b = ((col.b as i32) << 1).clamp(0, 255);
-            // convert to RGB565
-            let r = (r >> 3) as u16;
-            let g = (g >> 2) as u16;
-            let b = (b >> 3) as u16;
-            let col = b | (g << 5) | (r << 11);
-            lm.push(col);
+            let mut c = read_color24(reader);
+            c.r = (c.r as i32 * 2).clamp(0, 255) as u8;
+            c.g = (c.g as i32 * 2).clamp(0, 255) as u8;
+            c.b = (c.b as i32 * 2).clamp(0, 255) as u8;
+            lm.push(c);
         }
 
         LightmapLump {
@@ -672,12 +668,12 @@ impl SubModelLump {
             let num_faces = reader.read_u32::<LittleEndian>().unwrap();
 
             submodels.push(SubModel {
-                _mins: mins,
-                _maxs: maxs,
-                _origin: origin,
+                mins,
+                maxs,
+                origin,
                 headnode,
-                _first_face: first_face,
-                _num_faces: num_faces
+                first_face,
+                num_faces
             });
         }
 

@@ -9,12 +9,12 @@ use std::sync::Mutex;
 
 use asset_loader::load_env;
 use bsp_file::BspFile;
-use bsp_renderer::{BspMapRenderer, BspMapTextures};
-use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterController, fpview::FPView, playerinput::PlayerInput, transform3d::Transform3D};
+use bsp_renderer::{BspMapModelRenderer, BspMapRenderer, BspMapTextures, NUM_CUSTOM_LIGHT_LAYERS};
+use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterController, fpview::FPView, mapmodel::MapModel, playerinput::PlayerInput, rotator::Rotator, transform3d::Transform3D};
 use hecs::World;
 use lazy_static::lazy_static;
-use dbsdk_rs::{db::{self, log}, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::{Quaternion, Vector3}, vdp::{self, Texture}};
-use system::{character_system::{character_apply_input_update, character_init, character_input_update, character_rotation_update, character_update}, flycam_system::flycam_system_update, fpcam_system::fpcam_update, fpview_system::{fpview_eye_update, fpview_input_system_update}, render_system::render_system};
+use dbsdk_rs::{db, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::Vector3, vdp::{self, Texture}};
+use system::{character_system::{character_apply_input_update, character_init, character_input_update, character_rotation_update, character_update}, flycam_system::flycam_system_update, fpcam_system::fpcam_update, fpview_system::{fpview_eye_update, fpview_input_system_update}, render_system::render_system, rotator_system::rotator_system_update};
 
 pub mod common;
 pub mod bsp_file;
@@ -30,6 +30,12 @@ lazy_static! {
     static ref GAME_STATE: Mutex<GameState> = Mutex::new(GameState::new());
 }
 
+// override the default "println" macro
+#[macro_export]
+macro_rules! println {
+    ($($arg:tt)*) => (dbsdk_rs::db::log(format!($($arg)*).as_str()));
+}
+
 #[derive(Default)]
 pub struct InputState {
     pub move_x: f32,
@@ -43,7 +49,9 @@ pub struct InputState {
 pub struct MapData {
     pub map: BspFile,
     pub map_textures: BspMapTextures,
+    pub map_models: BspMapModelRenderer,
     pub map_renderers: Vec<BspMapRenderer>,
+    pub light_layers: [f32;NUM_CUSTOM_LIGHT_LAYERS],
 }
 
 #[derive(Default)]
@@ -62,22 +70,25 @@ struct GameState {
 
 impl MapData {
     pub fn load_map(map_name: &str) -> MapData {
-        db::log(format!("Loading map: {}", map_name).as_str());
+        println!("Loading map: {}", map_name);
         let mut bsp_file = FileStream::open(format!("/cd/content/maps/{}.bsp", map_name).as_str(), FileMode::Read).unwrap();
         let bsp = BspFile::new(&mut bsp_file);
         let bsp_textures = BspMapTextures::new(&bsp);
-        db::log("Map loaded");
+        let bsp_models = BspMapModelRenderer::new(&bsp, &bsp_textures);
+        println!("Map loaded");
 
         MapData {
             map: bsp,
             map_textures: bsp_textures,
-            map_renderers: Vec::new()
+            map_models: bsp_models,
+            map_renderers: Vec::new(),
+            light_layers: [0.0;NUM_CUSTOM_LIGHT_LAYERS]
         }
     }
 
     pub fn update_renderer_cache(self: &mut Self, index: usize) {
         while self.map_renderers.len() <= index {
-            log(format!("Allocating map renderer for camera {}", index).as_str());
+            println!("Allocating map renderer for camera {}", index);
             self.map_renderers.push(BspMapRenderer::new(&self.map));
         }
     }
@@ -104,8 +115,84 @@ impl GameState {
                 }
                 "worldspawn" => {
                     for (key, val) in entity_data {
-                        log(format!("worldspawn: {} = {}", key, val).as_str());
+                        println!("worldspawn: {} = {}", key, val);
                     }
+                }
+                "func_door" => {
+                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
+                    let pos = map_data.map.submodel_lump.submodels[model_idx].origin;
+
+                    world.spawn((
+                        Transform3D::default().with_position(pos),
+                        MapModel { model_idx }
+                    ));
+                }
+                "func_explosive" => {
+                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
+                    let pos = map_data.map.submodel_lump.submodels[model_idx].origin;
+                    
+                    world.spawn((
+                        Transform3D::default().with_position(pos),
+                        MapModel { model_idx }
+                    ));
+                }
+                "func_wall" => {
+                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
+                    let pos = map_data.map.submodel_lump.submodels[model_idx].origin;
+                    
+                    world.spawn((
+                        Transform3D::default().with_position(pos),
+                        MapModel { model_idx }
+                    ));
+                }
+                "func_object" => {
+                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
+                    let pos = map_data.map.submodel_lump.submodels[model_idx].origin;
+                    
+                    world.spawn((
+                        Transform3D::default().with_position(pos),
+                        MapModel { model_idx }
+                    ));
+                }
+                "func_plat" => {
+                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
+                    let pos = map_data.map.submodel_lump.submodels[model_idx].origin;
+                    
+                    world.spawn((
+                        Transform3D::default().with_position(pos),
+                        MapModel { model_idx }
+                    ));
+                }
+                "func_rotating" => {
+                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
+                    let spawn_flags = entity_data["spawnflags"].parse::<u32>().unwrap();
+                    let pos = parse_utils::parse_vec3(entity_data["origin"]);
+                    let speed = entity_data["speed"].parse::<f32>().unwrap();
+
+                    let axis = if spawn_flags & 4 != 0 {
+                        Vector3::unit_x()
+                    }
+                    else if spawn_flags & 8 != 0 {
+                        Vector3::unit_y()
+                    }
+                    else {
+                        Vector3::unit_z()
+                    };
+                    
+                    world.spawn((
+                        Transform3D::default().with_position(pos),
+                        Rotator { rot_axis: axis, rot_speed: speed },
+                        MapModel { model_idx }
+                    ));
+                }
+                "func_train" => {
+                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
+                    let pos = map_data.map.submodel_lump.submodels[model_idx].origin;
+                    
+                    world.spawn((
+                        Transform3D::default().with_position(pos),
+                        MapModel { model_idx }
+                    ));
                 }
                 _ => {
                 }
@@ -154,6 +241,7 @@ impl GameState {
         self.time_data.total_time += DELTA;
 
         // update & render
+        rotator_system_update(&self.time_data, &mut self.world);
         fpview_input_system_update(&input_state, &self.time_data, &mut self.world);
         character_init(&mut self.world);
         character_rotation_update(&mut self.world);
@@ -181,7 +269,6 @@ fn tick() {
 #[no_mangle]
 pub fn main(_: i32, _: i32) -> i32 {
     db::register_panic();
-    db::log(format!("Hello, DreamBox!").as_str());
     vdp::set_vsync_handler(Some(tick));
     return 0;
 }

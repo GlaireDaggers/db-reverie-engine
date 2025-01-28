@@ -4,3 +4,5 @@ pub mod fpview;
 pub mod playerinput;
 pub mod flycam;
 pub mod charactercontroller;
+pub mod mapmodel;
+pub mod rotator;
