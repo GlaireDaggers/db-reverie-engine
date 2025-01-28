@@ -2,7 +2,7 @@
 A 3D BSP-based game engine written in Rust for the DreamBox fantasy console
 
 # Current Status
-It's got a moving fly cam with collision detection! How neat!
+You can run around the map, jump, & crouch. Some brush entities are visible, though non functional (aside from func_rotating) and have no collision.
 
 # How to build
 Outside of the usual `dbsdk-cli` build tool you'd use for a Dreambox game, it also expects some things to be present in the content folder:
