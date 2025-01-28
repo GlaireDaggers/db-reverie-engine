@@ -160,11 +160,8 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
         // draw opaque geometry
         renderer.draw_opaque(&map_data.map, &map_data.map_textures, time.total_time, &cam_view, &cam_proj);
 
-        vdp::depth_func(vdp::Compare::Always);
-        vdp::bind_texture(None);
-        vdp::blend_func(vdp::BlendFactor::One, vdp::BlendFactor::Zero);
-
-        // draw models
+        // gather visible models
+        let mut visible_models = Vec::new();
         let mut model_mat: Matrix4x4 = Matrix4x4::identity();
         for (_, (model_info, model_transform)) in &mapmodels {
             let submodel = &map_data.map.submodel_lump.submodels[model_info.model_idx + 1];
@@ -181,12 +178,22 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
                 Matrix4x4::mul_simd(&Matrix4x4::translation(model_transform.position));
                 Matrix4x4::store_simd(&mut model_mat);
 
-                map_data.map_models.draw_model(&map_data.map_textures, model_info.model_idx, &model_mat, &cam_view, &cam_proj);
+                visible_models.push((model_mat, model_info.model_idx));
             }
+        }
+
+        // draw models (opaque)
+        for (transform, id) in &visible_models {
+            map_data.map_models.draw_model_opaque(&map_data.map, time.total_time, &map_data.map_textures, *id, transform, &cam_view, &cam_proj);
         }
 
         // draw transparent geometry
         renderer.draw_transparent(&map_data.map, &map_data.map_textures, time.total_time, &cam_view, &cam_proj);
+
+        // draw models (transparent)
+        for (transform, id) in &visible_models {
+            map_data.map_models.draw_model_transparent(&map_data.map, time.total_time, &map_data.map_textures, *id, transform, &cam_view, &cam_proj);
+        }
         
         camera_index += 1;
     }
