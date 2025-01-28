@@ -5,7 +5,7 @@ use lazy_static::lazy_static;
 use crate::{bsp_file::MASK_SOLID, component::{charactercontroller::{CharacterController, CharacterInputState, CharacterState}, fpview::FPView, playerinput::PlayerInput, transform3d::Transform3D}, InputState, MapData, TimeData};
 
 const GROUND_SLOPE_ANGLE: f32 = 45.0;
-const STEP_HEIGHT: f32 = 10.0;
+const STEP_HEIGHT: f32 = 20.0;
 const GRAVITY: f32 = 300.0;
 const FRICTION: f32 = 0.2;
 const MAX_ACCEL: f32 = 10.0;
@@ -108,24 +108,35 @@ pub fn character_update(time: &TimeData, map_data: &MapData, world: &mut World) 
         let move_vec_xy = Vector3::new(cstate.velocity.x, cstate.velocity.y, 0.0);
 
         let (box_pos, move_vec_xy) = if cstate.grounded && move_vec_xy.length_sq() > f32::EPSILON {
+            let original_pos = box_pos;
+            let original_move_vec_xy = move_vec_xy;
+
             // while on the ground, sweep up by step height, sweep sideways, then sweep back down by step height.
             let (box_pos, _, _) = map_data.map.trace_move(&box_pos, &Vector3::new(0.0, 0.0, STEP_HEIGHT), 1.0, false, box_extents);
             let (box_pos, move_vec_xy, _) = map_data.map.trace_move(&box_pos, &move_vec_xy, time.delta_time, true, box_extents);
             let (box_pos, _, trace) = map_data.map.trace_move(&box_pos, &Vector3::new(0.0, 0.0, -STEP_HEIGHT), 1.0, false, box_extents);
 
             // if we leave the ground, see if the ground is still close enough to step down
-            let box_pos = if trace.fraction == 1.0 {
+            let (box_pos, move_vec_xy) = if trace.fraction == 1.0 {
                 let (new_pos, _, trace) = map_data.map.trace_move(&box_pos, &Vector3::new(0.0, 0.0, -STEP_HEIGHT), 1.0, false, box_extents);
 
                 if trace.fraction < 1.0 {
-                    new_pos
+                    (new_pos, move_vec_xy)
                 }
                 else {
-                    box_pos
+                    (box_pos, move_vec_xy)
                 }
             }
             else {
-                box_pos
+                // if we stepped onto ground that's too steep, reset back to original pos and just do a normal sweep instead
+                let hit_normal = map_data.map.plane_lump.planes[trace.plane as usize].normal;
+                if hit_normal.z < *GROUND_SLOPE_COS_ANGLE {
+                    let (box_pos, move_vec_xy, _) = map_data.map.trace_move(&original_pos, &original_move_vec_xy, time.delta_time, true, box_extents);
+                    (box_pos, move_vec_xy)
+                }
+                else {
+                    (box_pos, move_vec_xy)
+                }
             };
 
             (box_pos, Vector3::new(move_vec_xy.x, move_vec_xy.y, f32::min(move_vec_xy.z, 0.0)))
