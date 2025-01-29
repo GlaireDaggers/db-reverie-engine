@@ -1,9 +1,9 @@
-use std::vec;
+use std::{collections::HashMap, vec};
 
 use dbsdk_rs::{db::log, field_offset::offset_of, math::{Matrix4x4, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture}};
 use lazy_static::lazy_static;
 
-use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, SURF_NODRAW, SURF_NOLM, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common::{self, aabb_aabb_intersects}};
+use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, SURF_NODRAW, SURF_NOLM, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common::{self, aabb_aabb_intersects, aabb_frustum}};
 
 pub const NUM_CUSTOM_LIGHT_LAYERS: usize = 30;
 pub const CUSTOM_LIGHT_LAYER_START: usize = 32;
@@ -44,6 +44,8 @@ fn make_light_table(data: &[u8]) -> Vec<f32> {
 
 struct LmAtlasPacker {
     pub lm: Texture,
+    pub cache: HashMap<usize, Rectangle>,
+    pub anim_regions: Vec<usize>,
     lm_pack_x: usize,
     lm_pack_y: usize,
     lm_pack_y_max: usize
@@ -53,13 +55,19 @@ impl LmAtlasPacker {
     pub fn new(size: i32) -> LmAtlasPacker {
         LmAtlasPacker {
             lm: Texture::new(size, size, false, vdp::TextureFormat::RGBA8888).unwrap(),
+            anim_regions: Vec::new(),
+            cache: HashMap::new(),
             lm_pack_x: 0,
             lm_pack_y: 0,
             lm_pack_y_max: 0
         }
     }
 
-    pub fn pack(self: &mut Self, width: usize, height: usize) -> Rectangle {
+    pub fn pack(self: &mut Self, face_id: usize, width: usize, height: usize, anim: bool) -> Rectangle {
+        if self.cache.contains_key(&face_id) {
+            return self.cache[&face_id];
+        }
+
         let lm_width = self.lm.width as usize;
         let lm_height = self.lm.height as usize;
 
@@ -78,6 +86,12 @@ impl LmAtlasPacker {
         self.lm_pack_x += width;
         self.lm_pack_y_max = self.lm_pack_y_max.max(height);
 
+        self.cache.insert(face_id, result);
+        
+        if anim {
+            self.anim_regions.push(face_id);
+        }
+
         result
     }
 
@@ -85,12 +99,9 @@ impl LmAtlasPacker {
         self.lm_pack_x = 0;
         self.lm_pack_y = 0;
         self.lm_pack_y_max = 0;
+        self.cache.clear();
+        self.anim_regions.clear();
     }
-}
-
-struct LmAnimRegion {
-    region: Rectangle,
-    face: usize,
 }
 
 struct Model {
@@ -108,7 +119,6 @@ pub struct BspMapTextures {
 pub struct BspMapModelRenderer {
     models: Vec<Model>,
     lm_atlas: LmAtlasPacker,
-    lm_anim_regions: Vec<LmAnimRegion>,
     geo_buff: Vec<PackedVertex>,
 }
 
@@ -119,20 +129,20 @@ pub struct BspMapRenderer {
     lm_uvs: Vec<Vec<Vector2>>,
     visible_leaves: Vec<bool>,
     lm_atlas: LmAtlasPacker,
-    lm_anim_regions: Vec<LmAnimRegion>,
     drawn_faces: Vec<bool>,
     geo_buff: Vec<PackedVertex>,
 }
 
-fn update_lm_animation(light_layers: &[f32;NUM_CUSTOM_LIGHT_LAYERS], animation_time: f32, lm_atlas: &LmAtlasPacker, lm_anim_regions: &Vec<LmAnimRegion>, bsp: &BspFile) {
+fn update_lm_animation(light_layers: &[f32;NUM_CUSTOM_LIGHT_LAYERS], animation_time: f32, lm_atlas: &LmAtlasPacker, bsp: &BspFile) {
     // update animated lightmap regions
     let lightstyle_frame = (animation_time * 10.0) as usize;
 
     let mut lm_slice_buffer = [Color32::new(0, 0, 0, 255);16*16];
-    for anim_region in lm_anim_regions {
-        let face = &bsp.face_lump.faces[anim_region.face];
+    for face_idx in &lm_atlas.anim_regions {
+        let face = &bsp.face_lump.faces[*face_idx];
+        let region = lm_atlas.cache[face_idx];
 
-        let slice_len = (anim_region.region.width * anim_region.region.height) as usize;
+        let slice_len = (region.width * region.height) as usize;
 
         let lm_target_slice = &mut lm_slice_buffer[0..slice_len];
         lm_target_slice.fill(Color32::new(0, 0, 0, 255));
@@ -162,11 +172,11 @@ fn update_lm_animation(light_layers: &[f32;NUM_CUSTOM_LIGHT_LAYERS], animation_t
             }
         }
 
-        lm_atlas.lm.set_texture_data_region(0, Some(anim_region.region), lm_target_slice);
+        lm_atlas.lm.set_texture_data_region(0, Some(region), lm_target_slice);
     }
 }
 
-fn unpack_face(bsp: &BspFile, textures: &BspMapTextures, face_idx: usize, edge_buffer: &mut Vec<Edge>, geo: &mut Vec<PackedVertex>, lm_uvs: &mut Vec<Vector2>, lm: &mut LmAtlasPacker, lm_anim_regions: &mut Vec<LmAnimRegion>) {
+fn unpack_face(bsp: &BspFile, textures: &BspMapTextures, face_idx: usize, edge_buffer: &mut Vec<Edge>, geo: &mut Vec<PackedVertex>, lm_uvs: &mut Vec<Vector2>, lm: &mut LmAtlasPacker) {
     let face = &bsp.face_lump.faces[face_idx];
     let tex_idx = face.texture_info as usize;
     let tex_info = &bsp.tex_info_lump.textures[tex_idx];
@@ -245,19 +255,12 @@ fn unpack_face(bsp: &BspFile, textures: &BspMapTextures, face_idx: usize, edge_b
 
     // upload region to lightmap atlas
     let (lm_region_offset, lm_region_scale) = if tex_info.flags & SURF_NOLM == 0 {
-        let lm_region = lm.pack(lm_size_x, lm_size_y);
+        let lm_region = lm.pack(face_idx, lm_size_x, lm_size_y, face.num_lightmaps > 1);
         let slice_start = (face.lightmap_offset / 3) as usize;
         let slice_end = slice_start + (lm_size_x * lm_size_y);
         let lm_slice = &bsp.lm_lump.lm[slice_start..slice_end];
 
         lm.lm.set_texture_data_region(0, Some(lm_region), lm_slice);
-        
-        if face.num_lightmaps > 1 {
-            lm_anim_regions.push(LmAnimRegion {
-                region: lm_region,
-                face: face_idx
-            });
-        }
 
         // hack: scale lightmap UVs inwards to avoid bilinear sampling artifacts on borders
         // todo: should probably be padding these instead
@@ -511,7 +514,6 @@ impl BspMapTextures {
 impl BspMapModelRenderer {
     pub fn new(bsp_file: &BspFile, textures: &BspMapTextures) -> BspMapModelRenderer {
         let mut lm_atlas = LmAtlasPacker::new(LM_SIZE);
-        let mut lm_anim_regions = Vec::new();
 
         // build models
         let mut models = Vec::new();
@@ -530,7 +532,7 @@ impl BspMapModelRenderer {
                 let face = &bsp_file.face_lump.faces[face_idx];
                 let tex_idx = face.texture_info as usize;
 
-                unpack_face(bsp_file, textures, face_idx, &mut edges, &mut geom, &mut lm_uv, &mut lm_atlas, &mut lm_anim_regions);
+                unpack_face(bsp_file, textures, face_idx, &mut edges, &mut geom, &mut lm_uv, &mut lm_atlas);
 
                 model_geom.push((tex_idx, geom, lm_uv));
             }
@@ -540,12 +542,12 @@ impl BspMapModelRenderer {
             });
         }
 
-        BspMapModelRenderer { models, lm_atlas, lm_anim_regions, geo_buff: Vec::with_capacity(1024) }
+        BspMapModelRenderer { models, lm_atlas, geo_buff: Vec::with_capacity(1024) }
     }
 
     /// Call each frame before rendering. Updates lightmap animation
     pub fn update(self: &BspMapModelRenderer, light_layers: &[f32;NUM_CUSTOM_LIGHT_LAYERS], bsp: &BspFile, animation_time: f32) {
-        update_lm_animation(light_layers, animation_time, &self.lm_atlas, &self.lm_anim_regions, bsp);
+        update_lm_animation(light_layers, animation_time, &self.lm_atlas, bsp);
     }
 
     /// Draw the opaque parts of a given map model
@@ -596,72 +598,95 @@ impl BspMapRenderer {
             drawn_faces: vec![false;num_faces],
             prev_leaf: -1,
             lm_atlas,
-            lm_anim_regions: Vec::new(),
             geo_buff: Vec::with_capacity(1024)
         }
     }
 
-    /// Call each frame before rendering. Recalculates visible leaves, rebuilds geometry and lightmap atlas, & updates lightmap animation
-    pub fn update(self: &mut Self, anim_time: f32, light_layers: &[f32;NUM_CUSTOM_LIGHT_LAYERS], bsp: &BspFile, textures: &BspMapTextures, position: &Vector3) {
-        let leaf_index = bsp.calc_leaf_index(position);
+    fn update_leaf(bsp: &BspFile, leaf_index: usize, visible_clusters: &[bool], visible_leaves: &mut [bool]) {
+        let leaf = &bsp.leaf_lump.leaves[leaf_index];
+        if leaf.cluster == u16::MAX {
+            return;
+        }
 
-        // if camera enters a new cluster, unpack new cluster's visibility info & build geometry
+        if visible_clusters[leaf.cluster as usize] {
+            visible_leaves[leaf_index] = true;
+        }
+    }
+
+    fn update_recursive(bsp: &BspFile, cur_node: i32, frustum: &[Vector4], visible_clusters: &[bool], visible_leaves: &mut [bool]) {
+        if cur_node < 0 {
+            Self::update_leaf(bsp, (-cur_node - 1) as usize, visible_clusters, visible_leaves);
+            return;
+        }
+
+        let node = &bsp.node_lump.nodes[cur_node as usize];
+
+        if !aabb_frustum(node._bbox_min, node._bbox_max, frustum) {
+            return;
+        }
+
+        Self::update_recursive(bsp, node.front_child, frustum, visible_clusters, visible_leaves);
+        Self::update_recursive(bsp, node.back_child, frustum, visible_clusters, visible_leaves);
+    }
+
+    /// Call each frame before rendering. Recalculates visible leaves, rebuilds geometry and lightmap atlas, & updates lightmap animation
+    pub fn update(self: &mut Self, frustum: &[Vector4], anim_time: f32, light_layers: &[f32;NUM_CUSTOM_LIGHT_LAYERS], bsp: &BspFile, textures: &BspMapTextures, position: &Vector3) {
+        let leaf_index = bsp.calc_leaf_index(position);
+        let leaf = &bsp.leaf_lump.leaves[leaf_index as usize];
+
+        // if camera enters a new cluster, unpack new cluster's visibility info
         if leaf_index != self.prev_leaf {
             self.prev_leaf = leaf_index;
-            let leaf = &bsp.leaf_lump.leaves[leaf_index as usize];
             
             self.vis.fill(false);
             if leaf.cluster != u16::MAX {
                 bsp.vis_lump.unpack_vis(leaf.cluster as usize, &mut self.vis);
             }
 
-            // mark visible leaves
-            for i in 0..self.visible_leaves.len() {
-                let leaf = &bsp.leaf_lump.leaves[i];
-                self.visible_leaves[i] = leaf.cluster != u16::MAX && self.vis[leaf.cluster as usize];
-            }
-
-            // build geometry for visible leaves
-            for m in &mut self.meshes {
-                m.clear();
-            }
-
-            for m in &mut self.lm_uvs {
-                m.clear();
-            }
-
+            // clear lightmap cache
             self.lm_atlas.reset();
-            self.lm_anim_regions.clear();
+        }
 
-            let mut edges: Vec<Edge> = Vec::new();
+        self.visible_leaves.fill(false);
+        Self::update_recursive(bsp, 0, frustum, &self.vis, &mut self.visible_leaves);
 
-            // faces might be shared by multiple leaves. keep track of them so we don't draw them more than once
-            self.drawn_faces.fill(false);
+        // build geometry for visible leaves
+        for m in &mut self.meshes {
+            m.clear();
+        }
 
-            for i in 0..self.visible_leaves.len() {
-                if self.visible_leaves[i] {
-                    let leaf = &bsp.leaf_lump.leaves[i];
-                    let start_face_idx = leaf.first_leaf_face as usize;
-                    let end_face_idx: usize = start_face_idx + (leaf.num_leaf_faces as usize);
+        for m in &mut self.lm_uvs {
+            m.clear();
+        }
 
-                    for leaf_face in start_face_idx..end_face_idx {
-                        let face_idx = bsp.leaf_face_lump.faces[leaf_face] as usize;
+        let mut edges: Vec<Edge> = Vec::new();
 
-                        if self.drawn_faces[face_idx] {
-                            continue;
-                        }
+        // faces might be shared by multiple leaves. keep track of them so we don't draw them more than once
+        self.drawn_faces.fill(false);
 
-                        self.drawn_faces[face_idx] = true;
+        for i in 0..self.visible_leaves.len() {
+            if self.visible_leaves[i] {
+                let leaf = &bsp.leaf_lump.leaves[i];
+                let start_face_idx = leaf.first_leaf_face as usize;
+                let end_face_idx: usize = start_face_idx + (leaf.num_leaf_faces as usize);
 
-                        let face = &bsp.face_lump.faces[face_idx];
-                        let tex_idx = face.texture_info as usize;
-                        unpack_face(bsp, textures, face_idx, &mut edges, &mut self.meshes[tex_idx], &mut self.lm_uvs[tex_idx], &mut self.lm_atlas, &mut self.lm_anim_regions);
+                for leaf_face in start_face_idx..end_face_idx {
+                    let face_idx = bsp.leaf_face_lump.faces[leaf_face] as usize;
+
+                    if self.drawn_faces[face_idx] {
+                        continue;
                     }
+
+                    self.drawn_faces[face_idx] = true;
+
+                    let face = &bsp.face_lump.faces[face_idx];
+                    let tex_idx = face.texture_info as usize;
+                    unpack_face(bsp, textures, face_idx, &mut edges, &mut self.meshes[tex_idx], &mut self.lm_uvs[tex_idx], &mut self.lm_atlas);
                 }
             }
         }
 
-        update_lm_animation(light_layers, anim_time, &self.lm_atlas, &self.lm_anim_regions, bsp);
+        update_lm_animation(light_layers, anim_time, &self.lm_atlas, bsp);
     }
 
     fn get_bounds_corners(center: Vector3, extents: Vector3) -> [Vector3;8] {

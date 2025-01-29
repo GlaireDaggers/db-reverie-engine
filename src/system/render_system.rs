@@ -1,7 +1,7 @@
 use dbsdk_rs::{field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture}};
 use hecs::World;
 
-use crate::{common, component::{camera::Camera, mapmodel::MapModel, transform3d::Transform3D}, MapData, TimeData};
+use crate::{common::{self, extract_frustum}, component::{camera::Camera, mapmodel::MapModel, transform3d::Transform3D}, MapData, TimeData};
 
 fn draw_env_quad(tex: &Texture, rotation: &Quaternion, camera_view: &Matrix4x4, camera_proj: &Matrix4x4) {
     // build view + projection matrix
@@ -32,65 +32,6 @@ fn draw_env_quad(tex: &Texture, rotation: &Quaternion, camera_view: &Matrix4x4, 
     vdp::set_culling(false);
 
     vdp::draw_geometry_packed(vdp::Topology::TriangleList, &quad);
-}
-
-fn _draw_aabb(center: Vector3, extents: Vector3, camera_view: &Matrix4x4, camera_proj: &Matrix4x4, col: Color32) {
-    let c0 = center + Vector3::new(-extents.x, -extents.y, -extents.z);
-    let c1 = center + Vector3::new( extents.x, -extents.y, -extents.z);
-    let c2 = center + Vector3::new(-extents.x,  extents.y, -extents.z);
-    let c3 = center + Vector3::new( extents.x,  extents.y, -extents.z);
-    let c4 = center + Vector3::new(-extents.x, -extents.y,  extents.z);
-    let c5 = center + Vector3::new( extents.x, -extents.y,  extents.z);
-    let c6 = center + Vector3::new(-extents.x,  extents.y,  extents.z);
-    let c7 = center + Vector3::new( extents.x,  extents.y,  extents.z);
-
-    let c0 = Vector4::new(c0.x, c0.y, c0.z, 1.0);
-    let c1 = Vector4::new(c1.x, c1.y, c1.z, 1.0);
-    let c2 = Vector4::new(c2.x, c2.y, c2.z, 1.0);
-    let c3 = Vector4::new(c3.x, c3.y, c3.z, 1.0);
-    let c4 = Vector4::new(c4.x, c4.y, c4.z, 1.0);
-    let c5 = Vector4::new(c5.x, c5.y, c5.z, 1.0);
-    let c6 = Vector4::new(c6.x, c6.y, c6.z, 1.0);
-    let c7 = Vector4::new(c7.x, c7.y, c7.z, 1.0);
-
-    let ocol = Color32::new(0, 0, 0, 0);
-
-    let mut geo = vec![
-        PackedVertex::new(c0, Vector2::zero(), col, ocol),
-        PackedVertex::new(c1, Vector2::zero(), col, ocol),
-        PackedVertex::new(c2, Vector2::zero(), col, ocol),
-        PackedVertex::new(c3, Vector2::zero(), col, ocol),
-        PackedVertex::new(c0, Vector2::zero(), col, ocol),
-        PackedVertex::new(c2, Vector2::zero(), col, ocol),
-        PackedVertex::new(c1, Vector2::zero(), col, ocol),
-        PackedVertex::new(c3, Vector2::zero(), col, ocol),
-
-        PackedVertex::new(c4, Vector2::zero(), col, ocol),
-        PackedVertex::new(c5, Vector2::zero(), col, ocol),
-        PackedVertex::new(c6, Vector2::zero(), col, ocol),
-        PackedVertex::new(c7, Vector2::zero(), col, ocol),
-        PackedVertex::new(c4, Vector2::zero(), col, ocol),
-        PackedVertex::new(c6, Vector2::zero(), col, ocol),
-        PackedVertex::new(c5, Vector2::zero(), col, ocol),
-        PackedVertex::new(c7, Vector2::zero(), col, ocol),
-
-        PackedVertex::new(c0, Vector2::zero(), col, ocol),
-        PackedVertex::new(c4, Vector2::zero(), col, ocol),
-        PackedVertex::new(c1, Vector2::zero(), col, ocol),
-        PackedVertex::new(c5, Vector2::zero(), col, ocol),
-        PackedVertex::new(c2, Vector2::zero(), col, ocol),
-        PackedVertex::new(c6, Vector2::zero(), col, ocol),
-        PackedVertex::new(c3, Vector2::zero(), col, ocol),
-        PackedVertex::new(c7, Vector2::zero(), col, ocol),
-    ];
-
-    Matrix4x4::load_identity_simd();
-    Matrix4x4::mul_simd(camera_view);
-    Matrix4x4::mul_simd(&common::coord_space_transform());
-    Matrix4x4::mul_simd(camera_proj);
-
-    Matrix4x4::transform_vertex_simd(&mut geo, offset_of!(PackedVertex => position));
-    vdp::draw_geometry_packed(vdp::Topology::LineList, &geo);
 }
 
 /// System which performs all rendering (world + entities)
@@ -126,6 +67,15 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
 
         let cam_proj = Matrix4x4::projection_perspective(640.0 / 480.0, camera.fov.to_radians(), camera.near, camera.far);
 
+        // calculate camera frustum planes
+        let mut viewproj = Matrix4x4::identity();
+        Matrix4x4::load_simd(&cam_view);
+        Matrix4x4::mul_simd(&common::coord_space_transform());
+        Matrix4x4::mul_simd(&cam_proj);
+        Matrix4x4::store_simd(&mut viewproj);
+
+        let frustum = extract_frustum(&viewproj);
+
         match camera.viewport_rect {
             Some(v) => vdp::viewport(v),
             None => vdp::viewport(Rectangle::new(0, 0, 640, 480))
@@ -153,7 +103,7 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
         let renderer = &mut map_data.map_renderers[camera_index];
 
         // update with new camera position
-        renderer.update(time.total_time, &map_data.light_layers, &map_data.map, &map_data.map_textures, &transform.position);
+        renderer.update(&frustum, time.total_time, &map_data.light_layers, &map_data.map, &map_data.map_textures, &transform.position);
 
         // draw opaque geometry
         renderer.draw_opaque(&map_data.map, &map_data.map_textures, time.total_time, &cam_view, &cam_proj);
@@ -192,7 +142,7 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
         for (transform, id) in &visible_models {
             map_data.map_models.draw_model_transparent(&map_data.map, time.total_time, &map_data.map_textures, *id, transform, &cam_view, &cam_proj);
         }
-        
+
         camera_index += 1;
     }
 }
