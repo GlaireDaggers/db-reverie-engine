@@ -1,9 +1,9 @@
-use std::{collections::HashMap, vec};
+use std::{collections::HashMap, sync::Arc, vec};
 
-use dbsdk_rs::{db::log, field_offset::offset_of, math::{Matrix4x4, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture}};
+use dbsdk_rs::{field_offset::offset_of, math::{Matrix4x4, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture}};
 use lazy_static::lazy_static;
 
-use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, SURF_NODRAW, SURF_NOLM, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common::{self, aabb_aabb_intersects, aabb_frustum}};
+use crate::{asset_loader::TextureCache, bsp_file::{BspFile, Edge, SURF_NODRAW, SURF_NOLM, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common::{self, aabb_aabb_intersects, aabb_frustum}, println};
 
 pub const NUM_CUSTOM_LIGHT_LAYERS: usize = 30;
 pub const CUSTOM_LIGHT_LAYER_START: usize = 32;
@@ -109,8 +109,7 @@ struct Model {
 }
 
 pub struct BspMapTextures {
-    loaded_textures: Vec<Option<Texture>>,
-    tex_ids: Vec<usize>,
+    loaded_textures: Vec<Option<Arc<Texture>>>,
     err_tex: Texture,
     opaque_meshes: Vec<usize>,
     transp_meshes: Vec<usize>,
@@ -302,8 +301,7 @@ fn unpack_face(bsp: &BspFile, textures: &BspMapTextures, face_idx: usize, edge_b
         let lm_b = (((tex_b - tex_min) / (tex_max - tex_min)) * lm_region_scale) + lm_region_offset;
         let lm_c = (((tex_c - tex_min) / (tex_max - tex_min)) * lm_region_scale) + lm_region_offset;
 
-        let tex_id = textures.tex_ids[tex_idx];
-        match &textures.loaded_textures[tex_id] {
+        match &textures.loaded_textures[tex_idx] {
             Some(v) => {
                 let sc = Vector2::new(1.0 / v.width as f32, 1.0 / v.height as f32);
                 tex_a = tex_a * sc;
@@ -364,8 +362,7 @@ fn draw_opaque_geom_setup(model: &Matrix4x4, camera_view: &Matrix4x4, camera_pro
 }
 
 fn draw_opaque_geom(bsp: &BspFile, animation_time: f32, textures: &BspMapTextures, texture_index: usize, geo_buff: &mut Vec<PackedVertex>, m: &Vec<PackedVertex>, lm_uvs: &Vec<Vector2>, lm: &LmAtlasPacker) {
-    let tex_id = textures.tex_ids[texture_index];
-    match &textures.loaded_textures[tex_id] {
+    match &textures.loaded_textures[texture_index] {
         Some(v) => {
             vdp::bind_texture(Some(v));
             vdp::set_sample_params(vdp::TextureFilter::Linear, vdp::TextureWrap::Repeat, vdp::TextureWrap::Repeat);
@@ -428,8 +425,7 @@ fn draw_transparent_geom_setup(model: &Matrix4x4, camera_view: &Matrix4x4, camer
 }
 
 fn draw_transparent_geom(bsp: &BspFile, animation_time: f32, textures: &BspMapTextures, texture_index: usize, geo_buff: &mut Vec<PackedVertex>, m: &Vec<PackedVertex>) {
-    let tex_id = textures.tex_ids[texture_index];
-    match &textures.loaded_textures[tex_id] {
+    match &textures.loaded_textures[texture_index] {
         Some(v) => {
             vdp::bind_texture(Some(v));
             vdp::set_sample_params(vdp::TextureFilter::Linear, vdp::TextureWrap::Repeat, vdp::TextureWrap::Repeat);
@@ -455,11 +451,9 @@ fn draw_transparent_geom(bsp: &BspFile, animation_time: f32, textures: &BspMapTe
 }
 
 impl BspMapTextures {
-    pub fn new(bsp_file: &BspFile) -> BspMapTextures {
+    pub fn new(bsp_file: &BspFile, texture_cache: &mut TextureCache) -> BspMapTextures {
         // load unique textures
-        let mut loaded_tex_names: Vec<&str> = Vec::new();
-        let mut loaded_textures: Vec<Option<Texture>> = Vec::new();
-        let mut tex_ids: Vec<usize> = Vec::new();
+        let mut loaded_textures: Vec<Option<Arc<Texture>>> = Vec::new();
 
         let mut opaque_meshes: Vec<usize> = Vec::new();
         let mut transp_meshes: Vec<usize> = Vec::new();
@@ -478,32 +472,21 @@ impl BspMapTextures {
                 opaque_meshes.push(i);
             }
 
-            match loaded_tex_names.iter().position(|&r| r == &tex_info.texture_name) {
-                Some(i) => {
-                    tex_ids.push(i);
-                }
-                None => {
-                    // new texture
-                    log(format!("Loading: {}", &tex_info.texture_name).as_str());
+            println!("Loading {}", tex_info.texture_name);
 
-                    let tex = match load_texture(format!("/cd/content/textures/{}.ktx", &tex_info.texture_name).as_str()) {
-                        Err(_) => {
-                            log(format!("Failed loading {}", &tex_info.texture_name).as_str());
-                            None
-                        },
-                        Ok(v) => Some(v)
-                    };
-                    let i = loaded_textures.len();
-                    loaded_tex_names.push(&tex_info.texture_name);
-                    loaded_textures.push(tex);
-                    tex_ids.push(i);
+            let tex = match texture_cache.load(format!("/cd/content/textures/{}.ktx", &tex_info.texture_name).as_str()) {
+                Ok(v) => Some(v),
+                Err(_) => {
+                    println!("Failed loading {}", tex_info.texture_name);
+                    None
                 }
-            }
+            };
+
+            loaded_textures.push(tex);
         }
 
         BspMapTextures {
             loaded_textures,
-            tex_ids,
             err_tex,
             opaque_meshes,
             transp_meshes

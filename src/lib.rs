@@ -5,9 +5,9 @@ extern crate ktx;
 extern crate hecs;
 extern crate regex;
 
-use std::{collections::HashMap, sync::Mutex};
+use std::{collections::HashMap, sync::{Arc, Mutex}};
 
-use asset_loader::load_env;
+use asset_loader::{load_env, TextureCache};
 use bsp_file::BspFile;
 use bsp_renderer::{BspMapModelRenderer, BspMapRenderer, BspMapTextures, NUM_CUSTOM_LIGHT_LAYERS};
 use common::aabb_aabb_intersects;
@@ -62,19 +62,20 @@ pub struct TimeData {
 }
 
 struct GameState {
+    _tex_cache: TextureCache,
     gamepad: Gamepad,
     world: World,
     time_data: TimeData,
     map_data: Option<MapData>,
-    env: Option<[Texture;6]>,
+    env: Option<[Arc<Texture>;6]>,
 }
 
 impl MapData {
-    pub fn load_map(map_name: &str) -> MapData {
+    pub fn load_map(map_name: &str, tex_cache: &mut TextureCache) -> MapData {
         println!("Loading map: {}", map_name);
         let mut bsp_file = FileStream::open(format!("/cd/content/maps/{}.bsp", map_name).as_str(), FileMode::Read).unwrap();
         let bsp = BspFile::new(&mut bsp_file);
-        let bsp_textures = BspMapTextures::new(&bsp);
+        let bsp_textures = BspMapTextures::new(&bsp, tex_cache);
         let bsp_models = BspMapModelRenderer::new(&bsp, &bsp_textures);
         println!("Map loaded");
 
@@ -97,10 +98,12 @@ impl MapData {
 
 impl GameState {
     pub fn new() -> GameState {
+        let mut tex_cache = TextureCache::new();
+
         let mut world = World::new();
 
-        let map_data = MapData::load_map("demo1");
-        let env = load_env("sky");
+        let map_data = MapData::load_map("demo1", &mut tex_cache);
+        let env = load_env("sky", &mut tex_cache);
 
         let mut player_start_pos = Vector3::zero();
         let mut player_start_rot = 0.0;
@@ -309,6 +312,7 @@ impl GameState {
         ));
 
         GameState {
+            _tex_cache: tex_cache,
             gamepad: Gamepad::new(gamepad::GamepadSlot::SlotA),
             world,
             time_data: TimeData::default(),

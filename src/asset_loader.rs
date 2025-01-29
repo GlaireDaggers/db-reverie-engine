@@ -1,3 +1,5 @@
+use std::{collections::HashMap, marker::PhantomData, sync::{Weak, Arc}};
+
 use dbsdk_rs::{io::{self, IOError}, vdp};
 use ktx::KtxInfo;
 
@@ -51,13 +53,76 @@ pub fn load_texture(path: &str) -> Result<vdp::Texture, IOError> {
     Ok(tex)
 }
 
-pub fn load_env(env_name: &str) -> [vdp::Texture;6] {
-    let env_ft = load_texture(format!("/cd/content/env/{}1ft.ktx", env_name).as_str()).unwrap();
-    let env_bk = load_texture(format!("/cd/content/env/{}1bk.ktx", env_name).as_str()).unwrap();
-    let env_lf = load_texture(format!("/cd/content/env/{}1lf.ktx", env_name).as_str()).unwrap();
-    let env_rt = load_texture(format!("/cd/content/env/{}1rt.ktx", env_name).as_str()).unwrap();
-    let env_up = load_texture(format!("/cd/content/env/{}1up.ktx", env_name).as_str()).unwrap();
-    let env_dn = load_texture(format!("/cd/content/env/{}1dn.ktx", env_name).as_str()).unwrap();
+pub fn load_env(env_name: &str, tex_cache: &mut TextureCache) -> [Arc<vdp::Texture>;6] {
+    let env_ft = tex_cache.load(format!("/cd/content/env/{}1ft.ktx", env_name).as_str()).unwrap();
+    let env_bk = tex_cache.load(format!("/cd/content/env/{}1bk.ktx", env_name).as_str()).unwrap();
+    let env_lf = tex_cache.load(format!("/cd/content/env/{}1lf.ktx", env_name).as_str()).unwrap();
+    let env_rt = tex_cache.load(format!("/cd/content/env/{}1rt.ktx", env_name).as_str()).unwrap();
+    let env_up = tex_cache.load(format!("/cd/content/env/{}1up.ktx", env_name).as_str()).unwrap();
+    let env_dn = tex_cache.load(format!("/cd/content/env/{}1dn.ktx", env_name).as_str()).unwrap();
 
     [env_ft, env_bk, env_lf, env_rt, env_up, env_dn]
 }
+
+pub trait ResourceLoader<TResource> {
+    fn load_resource(path: &str) -> Result<TResource, IOError>;
+}
+
+pub struct TextureLoader {
+}
+
+impl ResourceLoader<vdp::Texture> for TextureLoader {
+    fn load_resource(path: &str) -> Result<vdp::Texture, IOError> {
+        return load_texture(path);
+    }
+}
+
+/// Implementation of a smart cache with ref counted resources
+/// Attempts to load the same resource path more than once will return a reference to the same resource
+/// If all references to the resource are dropped, the resource will be unloaded
+pub struct ResourceCache<TResource, TResourceLoader>
+    where TResourceLoader: ResourceLoader<TResource>
+{
+    cache: HashMap<String, Weak<TResource>>,
+    phantom: PhantomData<TResourceLoader>
+}
+
+impl<TResource, TResourceLoader> ResourceCache<TResource, TResourceLoader> 
+    where TResourceLoader: ResourceLoader<TResource>
+{
+    pub fn new() -> ResourceCache<TResource, TResourceLoader> {
+        ResourceCache::<TResource, TResourceLoader> {
+            cache: HashMap::new(),
+            phantom: PhantomData::default()
+        }
+    }
+
+    pub fn load(self: &mut Self, path: &str) -> Result<Arc<TResource>, IOError> {
+        if self.cache.contains_key(path) {
+            // try and get a reference to the resource, upgraded to a new Rc
+            // if that fails, the resource has been unloaded (we'll just load a new one)
+            let res = self.cache[path].clone().upgrade();
+            match res {
+                Some(v) => {
+                    return Ok(v);
+                }
+                None => {
+                    self.cache.remove(path);
+                }
+            };
+        }
+
+        let tex = match TResourceLoader::load_resource(path) {
+            Ok(v) => v,
+            Err(e) => return Err(e)
+        };
+
+        let res = Arc::new(tex);
+        let store = Arc::downgrade(&res.clone());
+
+        self.cache.insert(path.to_owned(), store);
+        return Ok(res);
+    }
+}
+
+pub type TextureCache = ResourceCache<vdp::Texture, TextureLoader>;

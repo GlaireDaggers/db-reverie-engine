@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use dbsdk_rs::{field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture}};
 use hecs::World;
 
@@ -35,7 +37,7 @@ fn draw_env_quad(tex: &Texture, rotation: &Quaternion, camera_view: &Matrix4x4, 
 }
 
 /// System which performs all rendering (world + entities)
-pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<[Texture;6]>, world: &mut World) {
+pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<[Arc<Texture>;6]>, world: &mut World) {
     // gather map models
     let mut mapmodel_iter = world.query::<(&MapModel, &Transform3D)>();
     let mapmodels = mapmodel_iter
