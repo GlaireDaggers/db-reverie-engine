@@ -99,14 +99,12 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
     let mut mapmodel_iter = world.query::<(&MapModel, &Transform3D)>();
     let mapmodels = mapmodel_iter
         .iter()
-        .map(|(e, c)| (e, c))
         .collect::<Vec<_>>();
 
     // gather cameras
     let mut camera_iter = world.query::<(&Transform3D, &Camera)>();
     let cameras = camera_iter
         .iter()
-        .map(|(e, c)| (e, c))
         .collect::<Vec<_>>();
 
     let mut camera_index = 0;

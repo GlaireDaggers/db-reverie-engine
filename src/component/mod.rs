@@ -6,3 +6,5 @@ pub mod flycam;
 pub mod charactercontroller;
 pub mod mapmodel;
 pub mod rotator;
+pub mod door;
+pub mod triggerable;

@@ -3,7 +3,7 @@ use std::vec;
 use dbsdk_rs::{db::log, field_offset::offset_of, math::{Matrix4x4, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture}};
 use lazy_static::lazy_static;
 
-use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, SURF_NODRAW, SURF_NOLM, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common};
+use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, SURF_NODRAW, SURF_NOLM, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common::{self, aabb_aabb_intersects}};
 
 pub const NUM_CUSTOM_LIGHT_LAYERS: usize = 30;
 pub const CUSTOM_LIGHT_LAYER_START: usize = 32;
@@ -687,9 +687,7 @@ impl BspMapRenderer {
 
         let leaf = &bsp.leaf_lump.leaves[leaf_index];
 
-        return min.x <= leaf.bbox_max.x && max.x >= leaf.bbox_min.x &&
-            min.y <= leaf.bbox_max.y && max.y >= leaf.bbox_min.y &&
-            min.z <= leaf.bbox_max.z && max.z >= leaf.bbox_min.z;
+        return aabb_aabb_intersects(min, max, leaf.bbox_min, leaf.bbox_max);
     }
 
     fn check_vis_recursive(self: &Self, bsp: &BspFile, node_index: i32, center: Vector3, extents: Vector3, corners: &[Vector3;8]) -> bool {

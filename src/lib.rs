@@ -5,16 +5,17 @@ extern crate ktx;
 extern crate hecs;
 extern crate regex;
 
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex};
 
 use asset_loader::load_env;
 use bsp_file::BspFile;
 use bsp_renderer::{BspMapModelRenderer, BspMapRenderer, BspMapTextures, NUM_CUSTOM_LIGHT_LAYERS};
-use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterController, fpview::FPView, mapmodel::MapModel, playerinput::PlayerInput, rotator::Rotator, transform3d::Transform3D};
-use hecs::World;
+use common::aabb_aabb_intersects;
+use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterController, door::{Door, DoorLink, DoorOpener}, fpview::FPView, mapmodel::MapModel, playerinput::PlayerInput, rotator::Rotator, transform3d::Transform3D, triggerable::{TriggerLink, TriggerState}};
+use hecs::{CommandBuffer, World};
 use lazy_static::lazy_static;
 use dbsdk_rs::{db, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::Vector3, vdp::{self, Texture}};
-use system::{character_system::{character_apply_input_update, character_init, character_input_update, character_rotation_update, character_update}, flycam_system::flycam_system_update, fpcam_system::fpcam_update, fpview_system::{fpview_eye_update, fpview_input_system_update}, render_system::render_system, rotator_system::rotator_system_update};
+use system::{character_system::{character_apply_input_update, character_init, character_input_update, character_rotation_update, character_update}, door_system::door_system_update, flycam_system::flycam_system_update, fpcam_system::fpcam_update, fpview_system::{fpview_eye_update, fpview_input_system_update}, render_system::render_system, rotator_system::rotator_system_update, triggerable_system::trigger_link_system_update};
 
 pub mod common;
 pub mod bsp_file;
@@ -104,14 +105,17 @@ impl GameState {
         let mut player_start_pos = Vector3::zero();
         let mut player_start_rot = 0.0;
 
+        let mut targetmap = HashMap::new();
+        let mut pending_resolve_targets = Vec::new();
+
+        let mut doors = Vec::new();
+
+        // spawn entities
         map_data.map.entity_lump.parse(|entity_data| {
             match entity_data["classname"] {
                 "info_player_start" => {
-                    let pos = entity_data["origin"];
-                    let angle = entity_data["angle"];
-
-                    player_start_pos = parse_utils::parse_vec3(pos);
-                    player_start_rot = angle.parse::<f32>().unwrap() + 180.0;
+                    player_start_pos = parse_utils::parse_prop_vec3(&entity_data, "origin", Vector3::zero());
+                    player_start_rot = parse_utils::parse_prop::<f32>(&entity_data, "angle", 0.0) + 180.0;
                 }
                 "worldspawn" => {
                     for (key, val) in entity_data {
@@ -119,17 +123,67 @@ impl GameState {
                     }
                 }
                 "func_door" => {
-                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
-                    let pos = map_data.map.submodel_lump.submodels[model_idx].origin;
+                    let model_idx = parse_utils::parse_prop_modelindex(&entity_data, "model", usize::MAX);
+                    let submodel = &map_data.map.submodel_lump.submodels[model_idx + 1];
+                    let pos = submodel.origin;
+                    let size = submodel.maxs - submodel.mins;
 
-                    world.spawn((
+                    let target_name = parse_utils::get_prop_str(&entity_data, "targetname", "");
+                    let target = parse_utils::get_prop_str(&entity_data, "target", "");
+
+                    let auto_open = target_name == "";
+
+                    let angle = parse_utils::parse_prop::<i32>(&entity_data, "angle", 0);
+                    let speed = parse_utils::parse_prop::<f32>(&entity_data, "speed", 100.0);
+                    let lip = parse_utils::parse_prop::<f32>(&entity_data, "lip", 0.0);
+
+                    let spawn_flags = parse_utils::parse_prop::<u32>(&entity_data, "spawnflags", 0);
+
+                    let move_dir = if angle == -1 {
+                        Vector3::new(0.0, 0.0, 1.0)
+                    }
+                    else if angle == -2 {
+                        Vector3::new(0.0, 0.0, -1.0)
+                    }
+                    else {
+                        let r = (angle as f32).to_radians();
+                        let sx = r.cos();
+                        let sy = r.sin();
+
+                        Vector3::new(sx, sy, 0.0)
+                    };
+
+                    // calculate move distance along direction
+                    let move_dist = (move_dir.x.abs() * size.x +
+                        move_dir.y.abs() * size.y +
+                        move_dir.z.abs() * size.z) - lip;
+
+                    let open_pos = pos + (move_dir * move_dist);
+
+                    let e = world.spawn((
                         Transform3D::default().with_position(pos),
+                        Door { auto_open, open_pos, close_pos: pos, move_speed: speed },
+                        TriggerState { triggered: false },
                         MapModel { model_idx }
                     ));
+
+                    if target != "" {
+                        pending_resolve_targets.push((e, target.to_owned()));
+                    }
+
+                    if target_name != "" {
+                        targetmap.insert(target_name.to_owned(), e);
+                    }
+
+                    // don't link doors if they have the "don't link" spawn flag set
+                    if spawn_flags & 4 == 0 {
+                        doors.push((e, submodel));
+                    }
                 }
                 "func_explosive" => {
-                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
-                    let pos = map_data.map.submodel_lump.submodels[model_idx].origin;
+                    let model_idx = parse_utils::parse_prop_modelindex(&entity_data, "model", usize::MAX);
+                    let submodel = &map_data.map.submodel_lump.submodels[model_idx + 1];
+                    let pos = submodel.origin;
                     
                     world.spawn((
                         Transform3D::default().with_position(pos),
@@ -137,8 +191,9 @@ impl GameState {
                     ));
                 }
                 "func_wall" => {
-                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
-                    let pos = map_data.map.submodel_lump.submodels[model_idx].origin;
+                    let model_idx = parse_utils::parse_prop_modelindex(&entity_data, "model", usize::MAX);
+                    let submodel = &map_data.map.submodel_lump.submodels[model_idx + 1];
+                    let pos = submodel.origin;
                     
                     world.spawn((
                         Transform3D::default().with_position(pos),
@@ -146,8 +201,9 @@ impl GameState {
                     ));
                 }
                 "func_object" => {
-                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
-                    let pos = map_data.map.submodel_lump.submodels[model_idx].origin;
+                    let model_idx = parse_utils::parse_prop_modelindex(&entity_data, "model", usize::MAX);
+                    let submodel = &map_data.map.submodel_lump.submodels[model_idx + 1];
+                    let pos = submodel.origin;
                     
                     world.spawn((
                         Transform3D::default().with_position(pos),
@@ -155,8 +211,9 @@ impl GameState {
                     ));
                 }
                 "func_plat" => {
-                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
-                    let pos = map_data.map.submodel_lump.submodels[model_idx].origin;
+                    let model_idx = parse_utils::parse_prop_modelindex(&entity_data, "model", usize::MAX);
+                    let submodel = &map_data.map.submodel_lump.submodels[model_idx + 1];
+                    let pos = submodel.origin;
                     
                     world.spawn((
                         Transform3D::default().with_position(pos),
@@ -164,10 +221,11 @@ impl GameState {
                     ));
                 }
                 "func_rotating" => {
-                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
-                    let spawn_flags = entity_data["spawnflags"].parse::<u32>().unwrap();
-                    let pos = parse_utils::parse_vec3(entity_data["origin"]);
-                    let speed = entity_data["speed"].parse::<f32>().unwrap();
+                    let model_idx = parse_utils::parse_prop_modelindex(&entity_data, "model", usize::MAX);
+                    let submodel = &map_data.map.submodel_lump.submodels[model_idx + 1];
+                    let spawn_flags = parse_utils::parse_prop::<u32>(&entity_data, "spawnflags", 0);
+                    let pos = parse_utils::parse_prop_vec3(&entity_data, "origin", submodel.origin);
+                    let speed = parse_utils::parse_prop::<f32>(&entity_data, "speed", 0.0);
 
                     let axis = if spawn_flags & 4 != 0 {
                         Vector3::unit_x()
@@ -186,8 +244,9 @@ impl GameState {
                     ));
                 }
                 "func_train" => {
-                    let model_idx = (entity_data["model"][1..].parse::<i32>().unwrap() - 1) as usize;
-                    let pos = map_data.map.submodel_lump.submodels[model_idx].origin;
+                    let model_idx = parse_utils::parse_prop_modelindex(&entity_data, "model", usize::MAX);
+                    let submodel = &map_data.map.submodel_lump.submodels[model_idx + 1];
+                    let pos = submodel.origin;
                     
                     world.spawn((
                         Transform3D::default().with_position(pos),
@@ -199,12 +258,48 @@ impl GameState {
             }
         });
 
-        // spawn entities
+        // resolve triggerable entity targets
+        let mut cmd_buf = CommandBuffer::new();
+        for (e, targetname) in pending_resolve_targets {
+            if !targetmap.contains_key(&targetname) {
+                println!("Couldn't find trigger target: {}", &targetname);
+            }
+            else {
+                let target_ent = targetmap[&targetname];
+                cmd_buf.insert_one(e, TriggerLink {
+                    target: target_ent
+                });
+            }
+        }
+        cmd_buf.run_on(&mut world);
+
+        // link doors together if they are touching
+        let mut pending_door_links = Vec::new();
+        for (e, doormodel) in &doors {
+            let mut links = Vec::new();
+            for (e2, doormodel2) in &doors {
+                if e2 != e && aabb_aabb_intersects(doormodel.mins, doormodel.maxs, doormodel2.mins, doormodel2.maxs) {
+                    links.push(*e2);
+                }
+            }
+            pending_door_links.push((e, links));
+        }
+
+        for (e, links) in pending_door_links {
+            cmd_buf.insert_one(*e, DoorLink {
+                links
+            });
+        }
+
+        cmd_buf.run_on(&mut world);
+
+        // player & camera
         let player_entity = world.spawn((
             Transform3D::default().with_position(player_start_pos),
             FPView::new(-player_start_rot, 0.0, 40.0),
             CharacterController::default(),
-            PlayerInput::new()
+            PlayerInput::new(),
+            DoorOpener {}
         ));
 
         world.spawn((
@@ -241,14 +336,16 @@ impl GameState {
         self.time_data.total_time += DELTA;
 
         // update & render
-        rotator_system_update(&self.time_data, &mut self.world);
-        fpview_input_system_update(&input_state, &self.time_data, &mut self.world);
-        character_init(&mut self.world);
-        character_rotation_update(&mut self.world);
-        character_input_update(&input_state, &mut self.world);
-        fpview_eye_update(&self.time_data, &mut self.world);
         match &mut self.map_data {
             Some(v) => {
+                rotator_system_update(&self.time_data, &mut self.world);
+                door_system_update(&self.time_data, v, &mut self.world);
+                trigger_link_system_update(&mut self.world);
+                fpview_input_system_update(&input_state, &self.time_data, &mut self.world);
+                character_init(&mut self.world);
+                character_rotation_update(&mut self.world);
+                character_input_update(&input_state, &mut self.world);
+                fpview_eye_update(&self.time_data, &mut self.world);
                 character_apply_input_update(&self.time_data, v, &mut self.world);
                 character_update(&self.time_data, v, &mut self.world);
                 flycam_system_update(&input_state, &self.time_data, &v.map, &mut self.world);

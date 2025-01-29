@@ -8,7 +8,6 @@ pub fn fpcam_update(world: &mut World) {
     let mut camera_iter = world.query::<(&FPCamera, &mut Transform3D)>();
     let cameras = camera_iter
         .iter()
-        .map(|(e, c)| (e, c))
         .collect::<Vec<_>>();
 
     for (_, (fpcam, cam_transform)) in cameras {

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use dbsdk_rs::math::Vector3;
+use hecs::Entity;
 use crate::bsp_file::{BspFile, MASK_SOLID};
 
 const DIST_EPSILON: f32 = 0.01;
@@ -10,7 +11,8 @@ pub struct Trace {
     pub start_solid: bool,
     pub fraction: f32,
     pub end_pos: Vector3,
-    pub plane: i32
+    pub plane: i32,
+    pub entity: Option<Entity>
 }
 
 impl BspFile {
@@ -267,7 +269,8 @@ impl BspFile {
             start_solid: false,
             fraction: 1.0,
             end_pos: Vector3::zero(),
-            plane: -1
+            plane: -1,
+            entity: None
         };
 
         self.recursive_trace(head_node, &mut HashSet::<u16>::new(), content_mask, 0.0, 1.0, start, start, 0.0, Some(&box_extents), &mut trace_trace);
@@ -275,16 +278,17 @@ impl BspFile {
         trace_trace.start_solid
     }
 
-    /// Sweeps a box shape through the world & returns information about what was hit and where, if any
-    pub fn boxtrace(self: &Self, content_mask: u32, start: &Vector3, end: &Vector3, box_extents: Vector3) -> Trace {
-        let head_node = self.submodel_lump.submodels[0].headnode as i32;
+    /// Sweeps a box shape against the contents of the given submodel & returns information about what was hit and where, if any
+    pub fn boxtrace(self: &Self, model_index: usize, content_mask: u32, start: &Vector3, end: &Vector3, box_extents: Vector3) -> Trace {
+        let head_node = self.submodel_lump.submodels[model_index].headnode as i32;
 
         let mut trace_trace = Trace {
             all_solid: false,
             start_solid: false,
             fraction: 1.0,
             end_pos: Vector3::zero(),
-            plane: -1
+            plane: -1,
+            entity: None
         };
 
         self.recursive_trace(head_node, &mut HashSet::<u16>::new(), content_mask, 0.0, 1.0, start, end, 0.0, Some(&box_extents), &mut trace_trace);
@@ -299,16 +303,17 @@ impl BspFile {
         trace_trace
     }
 
-    /// Trace a line through the world & returns information about what was hit and where, if any
-    pub fn linetrace(self: &Self, content_mask: u32, start: &Vector3, end: &Vector3) -> Trace {
-        let head_node = self.submodel_lump.submodels[0].headnode as i32;
+    /// Trace a line against the contents of the given submodel & returns information about what was hit and where, if any
+    pub fn linetrace(self: &Self, model_index: usize, content_mask: u32, start: &Vector3, end: &Vector3) -> Trace {
+        let head_node = self.submodel_lump.submodels[model_index].headnode as i32;
 
         let mut trace_trace = Trace {
             all_solid: false,
             start_solid: false,
             fraction: 1.0,
             end_pos: Vector3::zero(),
-            plane: -1
+            plane: -1,
+            entity: None
         };
 
         self.recursive_trace(head_node, &mut HashSet::<u16>::new(), content_mask, 0.0, 1.0, start, end, 0.0, None, &mut trace_trace);
@@ -354,7 +359,8 @@ impl BspFile {
     /// * 'delta' - The timestep of the movement (final sweep length is velocity times delta)
     /// * 'allow_sliding' - Whether or not to allow sliding against hit surfaces
     /// * 'box_extents' - The extents of the box on each axis (half the box's total size)
-    pub fn trace_move(self: &Self, start_pos: &Vector3, velocity: &Vector3, delta: f32, allow_sliding: bool, box_extents: Vector3) -> (Vector3, Vector3, Trace) {
+    pub fn trace_move<TraceFn>(self: &Self, start_pos: &Vector3, velocity: &Vector3, delta: f32, allow_sliding: bool, box_extents: Vector3, trace_fn: TraceFn) -> (Vector3, Vector3, Trace)
+        where TraceFn: Fn(u32, &Vector3, &Vector3, &Vector3) -> Trace {
         const NUM_ITERATIONS: usize = 8;
 
         let mut cur_pos = *start_pos;
@@ -369,12 +375,13 @@ impl BspFile {
             start_solid: false,
             fraction: 1.0,
             end_pos: Vector3::zero(),
-            plane: -1
+            plane: -1,
+            entity: None
         };
 
         for _iter in 0..NUM_ITERATIONS {
             let end = cur_pos + (cur_velocity * remaining_delta);
-            let trace = self.boxtrace(MASK_SOLID, &cur_pos, &end, box_extents);
+            let trace = trace_fn(MASK_SOLID, &cur_pos, &end, &box_extents);
 
             if trace.all_solid {
                 cur_velocity.z = 0.0; // don't build vertical velocity

@@ -2,7 +2,7 @@ use dbsdk_rs::math::{Matrix4x4, Quaternion, Vector3, Vector4};
 use hecs::{CommandBuffer, World};
 use lazy_static::lazy_static;
 
-use crate::{bsp_file::MASK_SOLID, component::{charactercontroller::{CharacterController, CharacterInputState, CharacterState}, fpview::FPView, playerinput::PlayerInput, transform3d::Transform3D}, InputState, MapData, TimeData};
+use crate::{bsp_file::MASK_SOLID, component::{charactercontroller::{CharacterController, CharacterInputState, CharacterState}, fpview::FPView, mapmodel::MapModel, playerinput::PlayerInput, transform3d::Transform3D}, InputState, MapData, TimeData};
 
 const GROUND_SLOPE_ANGLE: f32 = 45.0;
 const STEP_HEIGHT: f32 = 20.0;
@@ -97,8 +97,67 @@ pub fn character_apply_input_update(time: &TimeData, map_data: &MapData, world: 
 
 /// System which controls movement of characters
 pub fn character_update(time: &TimeData, map_data: &MapData, world: &mut World) {
+    // gather map models
+    let mut mapmodel_iter = world.query::<(&MapModel, &Transform3D)>();
+    let mapmodels = mapmodel_iter
+        .iter()
+        .collect::<Vec<_>>();
+
+    // gather characters
+    let mut character_iter = world.query::<(&CharacterController, &mut CharacterState, &mut Transform3D)>();
+    let characters = character_iter
+        .iter()
+        .collect::<Vec<_>>();
+
+    // trace function which also checks against each map model entity
+    let trace_fn = |mask: u32, start: &Vector3, end: &Vector3, box_extents: &Vector3| {
+        let mut trace = map_data.map.boxtrace(0, mask, start, end, *box_extents);
+
+        for (e, (mapmodel, transform)) in &mapmodels {
+            // transform trace start + end into model's local space
+            let mut world2local = Matrix4x4::identity();
+            let mut inv_r = transform.rotation; inv_r.invert();
+            let inv_scale = 1.0 / transform.scale;
+
+            Matrix4x4::load_identity_simd();
+            Matrix4x4::mul_simd(&Matrix4x4::translation(transform.position * -1.0));
+            Matrix4x4::mul_simd(&Matrix4x4::rotation(inv_r));
+            Matrix4x4::mul_simd(&Matrix4x4::scale(inv_scale));
+            Matrix4x4::store_simd(&mut world2local);
+
+            let local_start = world2local * Vector4::new(start.x, start.y, start.z, 1.0);
+            let local_end = world2local * Vector4::new(end.x, end.y, end.z, 1.0);
+
+            let local_start = Vector3::new(local_start.x, local_start.y, local_start.z);
+            let local_end = Vector3::new(local_end.x, local_end.y, local_end.z);
+
+            let tr = map_data.map.boxtrace(mapmodel.model_idx + 1, mask, &local_start, &local_end, *box_extents);
+
+            if tr.fraction < trace.fraction {
+                // transform trace results back into world space
+                // TODO: this will not transform hit normal into world space if entity rotates or scales
+                // hit normal should probably be stored explicitly instead of storing hit plane
+
+                let mut local2world = Matrix4x4::identity();
+                Matrix4x4::load_identity_simd();
+                Matrix4x4::mul_simd(&Matrix4x4::scale(transform.scale));
+                Matrix4x4::mul_simd(&Matrix4x4::rotation(transform.rotation));
+                Matrix4x4::mul_simd(&Matrix4x4::translation(transform.position));
+                Matrix4x4::store_simd(&mut local2world);
+
+                let trace_end = local2world * Vector4::new(tr.end_pos.x, tr.end_pos.y, tr.end_pos.z, 1.0);
+
+                trace = tr;
+                trace.end_pos = Vector3::new(trace_end.x, trace_end.y, trace_end.z);
+                trace.entity = Some(*e);
+            }
+        }
+
+        return trace;
+    };
+
     // update character physics
-    for (_, (cc, cstate, transform)) in world.query_mut::<(&CharacterController, &mut CharacterState, &mut Transform3D)>() {
+    for (_, (cc, cstate, transform)) in characters {
         let box_extents = Vector3::new(cc.radius, cc.radius, cstate.height * 0.5);
         let box_offset = Vector3::unit_z() * cc.height_offset;
         
@@ -112,13 +171,13 @@ pub fn character_update(time: &TimeData, map_data: &MapData, world: &mut World) 
             let original_move_vec_xy = move_vec_xy;
 
             // while on the ground, sweep up by step height, sweep sideways, then sweep back down by step height.
-            let (box_pos, _, _) = map_data.map.trace_move(&box_pos, &Vector3::new(0.0, 0.0, STEP_HEIGHT), 1.0, false, box_extents);
-            let (box_pos, move_vec_xy, _) = map_data.map.trace_move(&box_pos, &move_vec_xy, time.delta_time, true, box_extents);
-            let (box_pos, _, trace) = map_data.map.trace_move(&box_pos, &Vector3::new(0.0, 0.0, -STEP_HEIGHT), 1.0, false, box_extents);
+            let (box_pos, _, _) = map_data.map.trace_move(&box_pos, &Vector3::new(0.0, 0.0, STEP_HEIGHT), 1.0, false, box_extents, trace_fn);
+            let (box_pos, move_vec_xy, _) = map_data.map.trace_move(&box_pos, &move_vec_xy, time.delta_time, true, box_extents, trace_fn);
+            let (box_pos, _, trace) = map_data.map.trace_move(&box_pos, &Vector3::new(0.0, 0.0, -STEP_HEIGHT), 1.0, false, box_extents, trace_fn);
 
             // if we leave the ground, see if the ground is still close enough to step down
             let (box_pos, move_vec_xy) = if trace.fraction == 1.0 {
-                let (new_pos, _, trace) = map_data.map.trace_move(&box_pos, &Vector3::new(0.0, 0.0, -STEP_HEIGHT), 1.0, false, box_extents);
+                let (new_pos, _, trace) = map_data.map.trace_move(&box_pos, &Vector3::new(0.0, 0.0, -STEP_HEIGHT), 1.0, false, box_extents, trace_fn);
 
                 if trace.fraction < 1.0 {
                     (new_pos, move_vec_xy)
@@ -131,7 +190,7 @@ pub fn character_update(time: &TimeData, map_data: &MapData, world: &mut World) 
                 // if we stepped onto ground that's too steep, reset back to original pos and just do a normal sweep instead
                 let hit_normal = map_data.map.plane_lump.planes[trace.plane as usize].normal;
                 if hit_normal.z < *GROUND_SLOPE_COS_ANGLE {
-                    let (box_pos, move_vec_xy, _) = map_data.map.trace_move(&original_pos, &original_move_vec_xy, time.delta_time, true, box_extents);
+                    let (box_pos, move_vec_xy, _) = map_data.map.trace_move(&original_pos, &original_move_vec_xy, time.delta_time, true, box_extents, trace_fn);
                     (box_pos, move_vec_xy)
                 }
                 else {
@@ -142,13 +201,13 @@ pub fn character_update(time: &TimeData, map_data: &MapData, world: &mut World) 
             (box_pos, Vector3::new(move_vec_xy.x, move_vec_xy.y, f32::min(move_vec_xy.z, 0.0)))
         }
         else {
-            let (box_pos, move_vec_xy, _) = map_data.map.trace_move(&box_pos, &move_vec_xy, time.delta_time, true, box_extents);
+            let (box_pos, move_vec_xy, _) = map_data.map.trace_move(&box_pos, &move_vec_xy, time.delta_time, true, box_extents, trace_fn);
             (box_pos, move_vec_xy)
         };
 
         // sweep character down
         let move_vec_z = Vector3::unit_z() * cstate.velocity.z;
-        let (box_pos, mut move_vec_z, trace) = map_data.map.trace_move(&box_pos, &move_vec_z, time.delta_time, !cstate.grounded, box_extents);
+        let (box_pos, mut move_vec_z, trace) = map_data.map.trace_move(&box_pos, &move_vec_z, time.delta_time, !cstate.grounded, box_extents, trace_fn);
 
         // if we hit something while moving down, & slope is within threshold, set character to grounded state
         if cstate.velocity.z < 0.0 && trace.fraction < 1.0 {

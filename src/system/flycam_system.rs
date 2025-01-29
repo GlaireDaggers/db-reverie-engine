@@ -20,7 +20,10 @@ pub fn flycam_system_update(input: &InputState, time: &TimeData, map: &BspFile, 
         let camera_velocity = (camera_fwd * 100.0 * input.move_y)
             + (camera_right * 100.0 * input.move_x);
 
-        let (new_pos, _, _) = map.trace_move(&transform.position, &camera_velocity, time.delta_time, true, collider_bounds);
+        let (new_pos, _, _) = map.trace_move(&transform.position, &camera_velocity, time.delta_time, true, collider_bounds,
+            |mask, start, end, box_extents| {
+                return map.boxtrace(0, mask, start, end, *box_extents);
+            });
         transform.position = new_pos;
     }
 }
