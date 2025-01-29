@@ -1,7 +1,7 @@
 use dbsdk_rs::{field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture}};
 use hecs::World;
 
-use crate::{common::{self, extract_frustum}, component::{camera::Camera, mapmodel::MapModel, transform3d::Transform3D}, MapData, TimeData};
+use crate::{common::{self, aabb_frustum, extract_frustum}, component::{camera::Camera, mapmodel::MapModel, transform3d::Transform3D}, MapData, TimeData};
 
 fn draw_env_quad(tex: &Texture, rotation: &Quaternion, camera_view: &Matrix4x4, camera_proj: &Matrix4x4) {
     // build view + projection matrix
@@ -116,7 +116,7 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
             let bounds_extents = (submodel.maxs - submodel.mins) * 0.5;
             let bounds_center = model_transform.position + ((submodel.maxs + submodel.mins) * 0.5);
 
-            let vis = renderer.check_vis(&map_data.map, bounds_center, bounds_extents);
+            let vis = aabb_frustum(bounds_center - bounds_extents, bounds_center + bounds_extents, &frustum) && renderer.check_vis(&map_data.map, bounds_center, bounds_extents);
 
             if vis {
                 // build model matrix
