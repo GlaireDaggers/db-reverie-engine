@@ -11,11 +11,103 @@ pub struct Trace {
     pub start_solid: bool,
     pub fraction: f32,
     pub end_pos: Vector3,
-    pub plane: i32,
+    pub hit_normal: Vector3,
     pub entity: Option<Entity>
 }
 
 impl BspFile {
+    pub fn trace_aabb(aabb_center: &Vector3, aabb_extents: &Vector3, start: &Vector3, end: &Vector3, box_extents: Option<&Vector3>, trace: &mut Trace) -> bool {
+        let planes = [
+            (Vector3::unit_x(),         aabb_center.x + aabb_extents.x),
+            (Vector3::unit_x() * -1.0,  (aabb_center.x - aabb_extents.x) * -1.0),
+            (Vector3::unit_y(),         aabb_center.y + aabb_extents.y),
+            (Vector3::unit_y() * -1.0,  (aabb_center.y - aabb_extents.y) * -1.0),
+            (Vector3::unit_z(),         aabb_center.z + aabb_extents.z),
+            (Vector3::unit_z() * -1.0,  (aabb_center.z - aabb_extents.z) * -1.0),
+        ];
+
+        let mut hit_normal = Vector3::zero();
+        let mut enterfrac = f32::MIN;
+        let mut exitfrac = 1.0;
+        let mut startout = false;
+        let mut getout = false;
+
+        for (p_normal, p_dist) in planes {
+            let dist = match box_extents {
+                Some(v) => {
+                    let offs = Vector3::new(
+                        if p_normal.x < 0.0 { v.x } else { -v.x },
+                        if p_normal.y < 0.0 { v.y } else { -v.y },
+                        if p_normal.z < 0.0 { v.z } else { -v.z }
+                    );
+
+                    p_dist - Vector3::dot(&offs, &p_normal)
+                }
+                None => {
+                    p_dist
+                }
+            };
+
+            let d1 = Vector3::dot(start, &p_normal) - dist;
+            let d2 = Vector3::dot(end, &p_normal) - dist;
+
+            if d2 > 0.0 {
+                getout = true;
+            }
+
+            if d1 > 0.0 {
+                startout = true;
+            }
+
+            if d1 > 0.0 && d2 >= d1 {
+                return false;
+            }
+
+            if d1 <= 0.0 && d2 <= 0.0 {
+                continue;
+            }
+
+            if d1 > d2 {
+                let f = (d1 - DIST_EPSILON) / (d1 - d2);
+                if f > enterfrac {
+                    enterfrac = f;
+                    hit_normal = p_normal;
+                }
+            }
+            else {
+                let f = (d1 + DIST_EPSILON) / (d1 - d2);
+                if f < exitfrac {
+                    exitfrac = f;
+                }
+            }
+        }
+
+        if !startout {
+            trace.start_solid = true;
+            if !getout {
+                trace.all_solid = true;
+            }
+
+            return false;
+        }
+
+        if enterfrac < exitfrac {
+            if enterfrac > f32::MIN && enterfrac < trace.fraction {
+                if enterfrac < 0.0 {
+                    enterfrac = 0.0;
+                }
+
+                trace.fraction = enterfrac;
+                trace.hit_normal = hit_normal;
+                trace.end_pos = *start + ((*end - *start) * enterfrac);
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     fn trace_brush(self: &Self, brush_idx: usize, start: &Vector3, end: &Vector3, frac_adj: f32, box_extents: Option<&Vector3>, trace: &mut Trace) {
         let brush = &self.brush_lump.brushes[brush_idx];
 
@@ -23,7 +115,7 @@ impl BspFile {
             return;
         }
 
-        let mut hitplane = -1;
+        let mut hit_normal = Vector3::zero();
         let mut enterfrac = f32::MIN;
         let mut exitfrac = 1.0;
         let mut startout = false;
@@ -71,7 +163,7 @@ impl BspFile {
                 let f = (d1 - DIST_EPSILON) / (d1 - d2);
                 if f > enterfrac {
                     enterfrac = f;
-                    hitplane = side.plane as i32;
+                    hit_normal = plane.normal;
                 }
             }
             else {
@@ -98,7 +190,7 @@ impl BspFile {
                 }
 
                 trace.fraction = enterfrac + frac_adj;
-                trace.plane = hitplane;
+                trace.hit_normal = hit_normal;
             }
         }
     }
@@ -269,7 +361,7 @@ impl BspFile {
             start_solid: false,
             fraction: 1.0,
             end_pos: Vector3::zero(),
-            plane: -1,
+            hit_normal: Vector3::zero(),
             entity: None
         };
 
@@ -287,7 +379,7 @@ impl BspFile {
             start_solid: false,
             fraction: 1.0,
             end_pos: Vector3::zero(),
-            plane: -1,
+            hit_normal: Vector3::zero(),
             entity: None
         };
 
@@ -312,7 +404,7 @@ impl BspFile {
             start_solid: false,
             fraction: 1.0,
             end_pos: Vector3::zero(),
-            plane: -1,
+            hit_normal: Vector3::zero(),
             entity: None
         };
 
@@ -375,7 +467,7 @@ impl BspFile {
             start_solid: false,
             fraction: 1.0,
             end_pos: Vector3::zero(),
-            plane: -1,
+            hit_normal: Vector3::zero(),
             entity: None
         };
 
@@ -402,8 +494,7 @@ impl BspFile {
                 break;
             }
 
-            let plane = &self.plane_lump.planes[trace.plane as usize];
-            planes[num_planes] = plane.normal;
+            planes[num_planes] = trace.hit_normal;
             num_planes += 1;
 
             let mut broke_i: bool = false;

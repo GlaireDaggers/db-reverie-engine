@@ -12,7 +12,7 @@ use asset_loader::{load_env, load_mesh, load_mesh_anim};
 use bsp_file::BspFile;
 use bsp_renderer::{BspMapModelRenderer, BspMapRenderer, BspMapTextures, NUM_CUSTOM_LIGHT_LAYERS};
 use common::aabb_aabb_intersects;
-use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterController, door::{Door, DoorLink, DoorOpener}, fpview::FPView, mapmodel::MapModel, mesh::{Mesh, MeshAnim}, playerinput::PlayerInput, rotator::Rotator, transform3d::Transform3D, triggerable::{TriggerLink, TriggerState}};
+use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterController, collider::ColliderBounds, door::{Door, DoorLink, DoorOpener}, fpview::FPView, mapmodel::MapModel, mesh::{Mesh, MeshAnim}, playerinput::PlayerInput, rotator::Rotator, transform3d::Transform3D, triggerable::{TriggerLink, TriggerState}};
 use dbanim::AnimationCurveLoopMode;
 use hecs::{CommandBuffer, World};
 use lazy_static::lazy_static;
@@ -316,8 +316,14 @@ impl GameState {
         // test mesh
         world.spawn((
             Transform3D::default().with_scale(Vector3::new(20.0, 20.0, 20.0)).with_rotation(Quaternion::from_euler(Vector3::new(90.0_f32.to_radians(), 0.0, 0.0))),
-            Mesh { mesh: load_mesh("/cd/content/model/leigh/leigh.dbm").unwrap() },
-            MeshAnim { anim: load_mesh_anim("/cd/content/model/leigh/leigh_idle.dba").unwrap(), loop_mode: AnimationCurveLoopMode::Repeat, time: 0.0 }
+            Mesh {
+                mesh: load_mesh("/cd/content/model/leigh/leigh.dbm").unwrap(),
+                bounds_offset: Vector3::new(0.0, 0.5, 0.0),
+                bounds_extents: Vector3::new(1.0, 2.0, 1.0),
+            },
+            MeshAnim { anim: load_mesh_anim("/cd/content/model/leigh/leigh_idle.dba").unwrap(), loop_mode: AnimationCurveLoopMode::Repeat, time: 0.0 },
+            // CharacterController::default(),
+            ColliderBounds { bounds_offset: Vector3::new(0.0, 0.5, 0.0), bounds_extents: Vector3::new(1.0, 2.0, 1.0) }
         ));
 
         GameState {

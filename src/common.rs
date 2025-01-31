@@ -57,3 +57,35 @@ pub fn aabb_frustum(min: Vector3, max: Vector3, frustum: &[Vector4]) -> bool {
 
     return true;
 }
+
+/// Transform an AABB from local space into world space, returning center + extents
+pub fn transform_aabb(offset: Vector3, extents: Vector3, local2world: &Matrix4x4) -> (Vector3, Vector3) {
+    // get bounds corners in local space
+    let corners = [
+        offset + Vector3::new(-extents.x, -extents.y, -extents.z),
+        offset + Vector3::new( extents.x, -extents.y, -extents.z),
+        offset + Vector3::new(-extents.x,  extents.y, -extents.z),
+        offset + Vector3::new( extents.x,  extents.y, -extents.z),
+        offset + Vector3::new(-extents.x, -extents.y,  extents.z),
+        offset + Vector3::new( extents.x, -extents.y,  extents.z),
+        offset + Vector3::new(-extents.x,  extents.y,  extents.z),
+        offset + Vector3::new( extents.x,  extents.y,  extents.z),
+    ];
+
+    // transform each corner to world space & get min/max extents
+
+    let mut min = Vector3::zero();
+    let mut max = Vector3::zero();
+
+    for c in corners {
+        let wspace_c = *local2world * Vector4::new(c.x, c.y, c.z, 1.0);
+        min.x = min.x.min(wspace_c.x);
+        min.y = min.y.min(wspace_c.y);
+        min.z = min.z.min(wspace_c.z);
+        max.x = max.x.max(wspace_c.x);
+        max.y = max.y.max(wspace_c.y);
+        max.z = max.z.max(wspace_c.z);
+    }
+
+    ((max + min) * 0.5, (max - min) * 0.5)
+}

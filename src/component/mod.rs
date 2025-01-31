@@ -9,3 +9,4 @@ pub mod rotator;
 pub mod door;
 pub mod triggerable;
 pub mod mesh;
+pub mod collider;

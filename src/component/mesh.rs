@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
-use dbsdk_rs::math::Matrix4x4;
+use dbsdk_rs::math::{Matrix4x4, Vector3};
 
 use crate::{dbanim::{AnimationCurveLoopMode, DBAnimationClip}, dbmesh::DBMesh};
 
 pub struct Mesh {
-    pub mesh: Arc<DBMesh>
+    pub mesh: Arc<DBMesh>,
+    pub bounds_offset: Vector3,
+    pub bounds_extents: Vector3,
 }
 
 pub struct MeshAnim {

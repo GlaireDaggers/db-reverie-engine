@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dbsdk_rs::{field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture, Vertex}};
 use hecs::World;
 
-use crate::{common::{self, aabb_frustum, coord_space_transform, extract_frustum}, component::{camera::Camera, mapmodel::MapModel, mesh::{Mesh, SkeletalPoseState}, transform3d::Transform3D}, dbmesh::DBMeshPart, sh::SphericalHarmonics, MapData, TimeData};
+use crate::{common::{self, aabb_frustum, coord_space_transform, extract_frustum, transform_aabb}, component::{camera::Camera, mapmodel::MapModel, mesh::{Mesh, SkeletalPoseState}, transform3d::Transform3D}, dbmesh::DBMeshPart, sh::SphericalHarmonics, MapData, TimeData};
 
 fn _draw_aabb(center: Vector3, extents: Vector3, camera_view: &Matrix4x4, camera_proj: &Matrix4x4, col: Color32) {
     let c0 = center + Vector3::new(-extents.x, -extents.y, -extents.z);
@@ -333,6 +333,51 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
             }
         }
 
+        // gather visible meshes
+        let mut visible_meshes = Vec::new();
+        let mut normal2world = Matrix4x4::identity();
+        for (_, (mesh, mesh_transform)) in &meshes {
+            Matrix4x4::load_identity_simd();
+            Matrix4x4::mul_simd(&Matrix4x4::scale(mesh_transform.scale));
+            Matrix4x4::mul_simd(&Matrix4x4::rotation(mesh_transform.rotation));
+            Matrix4x4::mul_simd(&Matrix4x4::translation(mesh_transform.position));
+            Matrix4x4::store_simd(&mut model_mat);
+
+            let (bounds_center, bounds_extents) = transform_aabb(mesh.bounds_offset, mesh.bounds_extents, &model_mat);
+
+            let vis = aabb_frustum(bounds_center - bounds_extents, bounds_center + bounds_extents, &frustum) && renderer.check_vis(&map_data.map, bounds_center, bounds_extents);
+
+            if vis {
+                Matrix4x4::load_identity_simd();
+                Matrix4x4::mul_simd(&Matrix4x4::rotation(mesh_transform.rotation));
+                Matrix4x4::store_simd(&mut normal2world);
+
+                visible_meshes.push((model_mat, normal2world, &mesh.mesh));
+            }
+        }
+
+        // gather visible skinned meshes
+        let mut visible_skinned_meshes = Vec::new();
+        for (_, (mesh, mesh_transform, pose_state)) in &sk_meshes {
+            Matrix4x4::load_identity_simd();
+            Matrix4x4::mul_simd(&Matrix4x4::scale(mesh_transform.scale));
+            Matrix4x4::mul_simd(&Matrix4x4::rotation(mesh_transform.rotation));
+            Matrix4x4::mul_simd(&Matrix4x4::translation(mesh_transform.position));
+            Matrix4x4::store_simd(&mut model_mat);
+
+            let (bounds_center, bounds_extents) = transform_aabb(mesh.bounds_offset, mesh.bounds_extents, &model_mat);
+
+            let vis = aabb_frustum(bounds_center - bounds_extents, bounds_center + bounds_extents, &frustum) && renderer.check_vis(&map_data.map, bounds_center, bounds_extents);
+
+            if vis {
+                Matrix4x4::load_identity_simd();
+                Matrix4x4::mul_simd(&Matrix4x4::rotation(mesh_transform.rotation));
+                Matrix4x4::store_simd(&mut normal2world);
+
+                visible_skinned_meshes.push((model_mat, normal2world, &mesh.mesh, &pose_state.bone_palette));
+            }
+        }
+
         // draw models (opaque)
         for (transform, id) in &visible_models {
             map_data.map_models.draw_model_opaque(&map_data.map, time.total_time, &map_data.map_textures, *id, transform, &cam_view, &cam_proj);
@@ -344,43 +389,29 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
         light.add_directional_light(Vector3::new(0.0, 0.0, 1.0), Vector3::new(1.0, 1.0, 1.0));
 
         // draw static meshes
-        let mut normal2world = Matrix4x4::identity();
-        for (_, (mesh, mesh_transform)) in &meshes {
+        for (local2world, normal2world, mesh) in &visible_meshes {
             Matrix4x4::load_identity_simd();
-            Matrix4x4::mul_simd(&Matrix4x4::scale(mesh_transform.scale));
-            Matrix4x4::mul_simd(&Matrix4x4::rotation(mesh_transform.rotation));
-            Matrix4x4::mul_simd(&Matrix4x4::translation(mesh_transform.position));
+            Matrix4x4::mul_simd(local2world);
             Matrix4x4::mul_simd(&cam_view);
             Matrix4x4::mul_simd(&coord_space_transform());
             Matrix4x4::mul_simd(&cam_proj);
             Matrix4x4::store_simd(&mut model_mat);
- 
-            Matrix4x4::load_identity_simd();
-            Matrix4x4::mul_simd(&Matrix4x4::rotation(mesh_transform.rotation));
-            Matrix4x4::store_simd(&mut normal2world);
 
-            for part in &mesh.mesh.mesh_parts {
+            for part in &mesh.mesh_parts {
                 draw_static_meshpart(part, &model_mat, &normal2world, &light);
             }
         }
 
-        // draw skinned meshes
-        for (_, (mesh, mesh_transform, pose_state)) in &sk_meshes {
+        for (local2world, normal2world, mesh, pose_state) in &visible_skinned_meshes {
             Matrix4x4::load_identity_simd();
-            Matrix4x4::mul_simd(&Matrix4x4::scale(mesh_transform.scale));
-            Matrix4x4::mul_simd(&Matrix4x4::rotation(mesh_transform.rotation));
-            Matrix4x4::mul_simd(&Matrix4x4::translation(mesh_transform.position));
+            Matrix4x4::mul_simd(local2world);
             Matrix4x4::mul_simd(&cam_view);
             Matrix4x4::mul_simd(&coord_space_transform());
             Matrix4x4::mul_simd(&cam_proj);
             Matrix4x4::store_simd(&mut model_mat);
- 
-            Matrix4x4::load_identity_simd();
-            Matrix4x4::mul_simd(&Matrix4x4::rotation(mesh_transform.rotation));
-            Matrix4x4::store_simd(&mut normal2world);
 
-            for part in &mesh.mesh.mesh_parts {
-                draw_skinned_meshpart(part, &model_mat, &normal2world, &pose_state.bone_palette, &light);
+            for part in &mesh.mesh_parts {
+                draw_skinned_meshpart(part, &model_mat, &normal2world, &pose_state, &light);
             }
         }
 
