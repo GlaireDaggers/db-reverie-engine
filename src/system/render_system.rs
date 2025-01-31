@@ -100,9 +100,10 @@ fn draw_env_quad(tex: &Texture, rotation: &Quaternion, camera_view: &Matrix4x4, 
     vdp::draw_geometry_packed(vdp::Topology::TriangleList, &quad);
 }
 
-fn draw_static_meshpart(meshpart: &DBMeshPart, mvp: &Matrix4x4, normal2world: &Matrix4x4, light: &SphericalHarmonics) {
+fn draw_static_meshpart(vtx_buffer: &mut Vec<Vertex>, meshpart: &DBMeshPart, mvp: &Matrix4x4, normal2world: &Matrix4x4, light: &SphericalHarmonics) {
+    vtx_buffer.clear();
+
     // unpack mesh part vertices into GPU vertices
-    let mut vtx_buffer: Vec<Vertex> = Vec::new();
     for vertex in meshpart.vertices.as_slice() {
         let vtx = Vector4::new(vertex.pos[0].to_f32(), vertex.pos[1].to_f32(), vertex.pos[2].to_f32(), 1.0);
         let nrm = Vector4::new(vertex.nrm[0].to_f32(), vertex.nrm[1].to_f32(), vertex.nrm[2].to_f32(), 1.0);
@@ -152,9 +153,10 @@ fn draw_static_meshpart(meshpart: &DBMeshPart, mvp: &Matrix4x4, normal2world: &M
     vdp::draw_geometry(vdp::Topology::TriangleList, vtx_buffer.as_slice());
 }
 
-fn draw_skinned_meshpart(meshpart: &DBMeshPart, mvp: &Matrix4x4, normal2world: &Matrix4x4, bonepalette: &[Matrix4x4], light: &SphericalHarmonics) {
+fn draw_skinned_meshpart(vtx_buffer: &mut Vec<Vertex>, meshpart: &DBMeshPart, mvp: &Matrix4x4, normal2world: &Matrix4x4, bonepalette: &[Matrix4x4], light: &SphericalHarmonics) {
+    vtx_buffer.clear();
+    
     // unpack mesh part vertices into GPU vertices
-    let mut vtx_buffer: Vec<Vertex> = Vec::new();
     for vertex in meshpart.vertices.as_slice() {
         let vtx = Vector4::new(vertex.pos[0].to_f32(), vertex.pos[1].to_f32(), vertex.pos[2].to_f32(), 1.0);
         let nrm = Vector4::new(vertex.nrm[0].to_f32(), vertex.nrm[1].to_f32(), vertex.nrm[2].to_f32(), 1.0);
@@ -388,6 +390,8 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
         light.add_ambient_light(Vector3::new(0.25, 0.1, 0.0));
         light.add_directional_light(Vector3::new(0.0, 0.0, 1.0), Vector3::new(1.0, 1.0, 1.0));
 
+        let mut vtx_buffer = Vec::with_capacity(1024);
+
         // draw static meshes
         for (local2world, normal2world, mesh) in &visible_meshes {
             Matrix4x4::load_identity_simd();
@@ -398,7 +402,7 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
             Matrix4x4::store_simd(&mut model_mat);
 
             for part in &mesh.mesh_parts {
-                draw_static_meshpart(part, &model_mat, &normal2world, &light);
+                draw_static_meshpart(&mut vtx_buffer, part, &model_mat, &normal2world, &light);
             }
         }
 
@@ -411,7 +415,7 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
             Matrix4x4::store_simd(&mut model_mat);
 
             for part in &mesh.mesh_parts {
-                draw_skinned_meshpart(part, &model_mat, &normal2world, &pose_state, &light);
+                draw_skinned_meshpart(&mut vtx_buffer, part, &model_mat, &normal2world, &pose_state, &light);
             }
         }
 
