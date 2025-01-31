@@ -2,7 +2,8 @@
 A 3D BSP-based game engine written in Rust for the DreamBox fantasy console
 
 # Current Status
-You can run around the map, jump, & crouch. Some brush entities are visible, though non functional (aside from func_rotating) and have no collision.
+You can run around the map, jump, & crouch. Some brush entities are visible & have partial functionality, (func_door, func_rotating).
+Static & skinned mesh entities are also supported.
 
 # How to build
 Outside of the usual `dbsdk-cli` build tool you'd use for a Dreambox game, it also expects some things to be present in the content folder:
