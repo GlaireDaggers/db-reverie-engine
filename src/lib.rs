@@ -4,20 +4,25 @@ extern crate lazy_static;
 extern crate ktx;
 extern crate hecs;
 extern crate regex;
+extern crate half;
 
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 
-use asset_loader::{load_env, TextureCache};
+use asset_loader::{load_env, load_mesh, load_mesh_anim};
 use bsp_file::BspFile;
 use bsp_renderer::{BspMapModelRenderer, BspMapRenderer, BspMapTextures, NUM_CUSTOM_LIGHT_LAYERS};
 use common::aabb_aabb_intersects;
-use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterController, door::{Door, DoorLink, DoorOpener}, fpview::FPView, mapmodel::MapModel, playerinput::PlayerInput, rotator::Rotator, transform3d::Transform3D, triggerable::{TriggerLink, TriggerState}};
+use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterController, door::{Door, DoorLink, DoorOpener}, fpview::FPView, mapmodel::MapModel, mesh::{Mesh, MeshAnim}, playerinput::PlayerInput, rotator::Rotator, transform3d::Transform3D, triggerable::{TriggerLink, TriggerState}};
+use dbanim::AnimationCurveLoopMode;
 use hecs::{CommandBuffer, World};
 use lazy_static::lazy_static;
-use dbsdk_rs::{db, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::Vector3, vdp::{self, Texture}};
-use system::{character_system::{character_apply_input_update, character_init, character_input_update, character_rotation_update, character_update}, door_system::door_system_update, flycam_system::flycam_system_update, fpcam_system::fpcam_update, fpview_system::{fpview_eye_update, fpview_input_system_update}, render_system::render_system, rotator_system::rotator_system_update, triggerable_system::trigger_link_system_update};
+use dbsdk_rs::{db, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::{Quaternion, Vector3}, vdp::{self, Texture}};
+use system::{anim_system::sk_anim_system_update, character_system::{character_apply_input_update, character_init, character_input_update, character_rotation_update, character_update}, door_system::door_system_update, flycam_system::flycam_system_update, fpcam_system::fpcam_update, fpview_system::{fpview_eye_update, fpview_input_system_update}, render_system::render_system, rotator_system::rotator_system_update, triggerable_system::trigger_link_system_update};
 
 pub mod common;
+pub mod dbanim;
+pub mod dbmesh;
+pub mod sh;
 pub mod bsp_file;
 pub mod bsp_renderer;
 pub mod bsp_collision;
@@ -62,7 +67,6 @@ pub struct TimeData {
 }
 
 struct GameState {
-    _tex_cache: TextureCache,
     gamepad: Gamepad,
     world: World,
     time_data: TimeData,
@@ -71,11 +75,11 @@ struct GameState {
 }
 
 impl MapData {
-    pub fn load_map(map_name: &str, tex_cache: &mut TextureCache) -> MapData {
+    pub fn load_map(map_name: &str) -> MapData {
         println!("Loading map: {}", map_name);
         let mut bsp_file = FileStream::open(format!("/cd/content/maps/{}.bsp", map_name).as_str(), FileMode::Read).unwrap();
         let bsp = BspFile::new(&mut bsp_file);
-        let bsp_textures = BspMapTextures::new(&bsp, tex_cache);
+        let bsp_textures = BspMapTextures::new(&bsp);
         let bsp_models = BspMapModelRenderer::new(&bsp, &bsp_textures);
         println!("Map loaded");
 
@@ -98,12 +102,10 @@ impl MapData {
 
 impl GameState {
     pub fn new() -> GameState {
-        let mut tex_cache = TextureCache::new();
-
         let mut world = World::new();
 
-        let map_data = MapData::load_map("demo1", &mut tex_cache);
-        let env = load_env("sky", &mut tex_cache);
+        let map_data = MapData::load_map("demo1");
+        let env = load_env("sky");
 
         let mut player_start_pos = Vector3::zero();
         let mut player_start_rot = 0.0;
@@ -311,8 +313,14 @@ impl GameState {
             FPCamera::new(player_entity)
         ));
 
+        // test mesh
+        world.spawn((
+            Transform3D::default().with_scale(Vector3::new(20.0, 20.0, 20.0)).with_rotation(Quaternion::from_euler(Vector3::new(90.0_f32.to_radians(), 0.0, 0.0))),
+            Mesh { mesh: load_mesh("/cd/content/model/leigh/leigh.dbm").unwrap() },
+            MeshAnim { anim: load_mesh_anim("/cd/content/model/leigh/leigh_idle.dba").unwrap(), loop_mode: AnimationCurveLoopMode::Repeat, time: 0.0 }
+        ));
+
         GameState {
-            _tex_cache: tex_cache,
             gamepad: Gamepad::new(gamepad::GamepadSlot::SlotA),
             world,
             time_data: TimeData::default(),
@@ -352,6 +360,7 @@ impl GameState {
                 fpview_eye_update(&self.time_data, &mut self.world);
                 character_apply_input_update(&self.time_data, v, &mut self.world);
                 character_update(&self.time_data, v, &mut self.world);
+                sk_anim_system_update(&self.time_data, &mut self.world);
                 flycam_system_update(&input_state, &self.time_data, &v.map, &mut self.world);
                 fpcam_update(&mut self.world);
                 render_system(&self.time_data, v, &self.env, &mut self.world);

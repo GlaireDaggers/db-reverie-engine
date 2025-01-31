@@ -1,7 +1,10 @@
-use std::{collections::HashMap, marker::PhantomData, sync::{Weak, Arc}};
+use std::{collections::HashMap, marker::PhantomData, path::Path, sync::{Arc, RwLock, Weak}};
 
 use dbsdk_rs::{io::{self, IOError}, vdp};
 use ktx::KtxInfo;
+use lazy_static::lazy_static;
+
+use crate::{dbanim::DBAnimationClip, dbmesh::DBMesh, println};
 
 const GL_RGB: u32 = 0x1907;
 const GL_RGBA: u32 = 0x1908;
@@ -12,68 +15,146 @@ const GL_COMPRESSED_RGB_S3TC_DXT1_EXT: u32 = 0x83F0;
 const GL_COMPRESSED_RGBA_S3TC_DXT1_EXT: u32 = 0x83F1;
 const GL_COMPRESSED_RGBA_S3TC_DXT3_EXT: u32 = 0x83F2;
 
-pub fn load_texture(path: &str) -> Result<vdp::Texture, IOError> {
-    let tex_file = match io::FileStream::open(path, io::FileMode::Read) {
-        Ok(v) => v,
-        Err(e) => return Err(e)
-    };
-
-    // decode KTX texture
-    let decoder = ktx::Decoder::new(tex_file).expect("Failed decoding KTX image");
-
-    // find appropriate VDP format
-    let tex_fmt = if decoder.gl_type() == GL_UNSIGNED_BYTE && decoder.gl_format() == GL_RGBA {
-        vdp::TextureFormat::RGBA8888
-    } else if decoder.gl_type() == GL_UNSIGNED_SHORT_5_6_5 && decoder.gl_format() == GL_RGB {
-        vdp::TextureFormat::RGB565
-    } else if decoder.gl_type() == GL_UNSIGNED_SHORT_4_4_4_4 && decoder.gl_format() == GL_RGBA {
-        vdp::TextureFormat::RGBA4444
-    } else if decoder.gl_internal_format() == GL_COMPRESSED_RGB_S3TC_DXT1_EXT || decoder.gl_internal_format() == GL_COMPRESSED_RGBA_S3TC_DXT1_EXT {
-        vdp::TextureFormat::DXT1
-    } else if decoder.gl_internal_format() == GL_COMPRESSED_RGBA_S3TC_DXT3_EXT {
-        vdp::TextureFormat::DXT3
-    } else {
-        panic!("Failed decoding KTX image: format is unsupported");
-    };
-
-    // allocate VDP texture
-    let tex = vdp::Texture::new(
-        decoder.pixel_width() as i32,
-        decoder.pixel_height() as i32,
-        decoder.mipmap_levels() > 1, tex_fmt)
-        .expect("Failed allocating VDP texture");
-
-    // upload each mip slice
-    let mut level: i32 = 0;
-    for tex_level in decoder.read_textures() {
-        tex.set_texture_data(level, &tex_level);
-        level += 1;
-    }
-
-    Ok(tex)
+lazy_static! {
+    static ref TEXTURE_CACHE: RwLock<TextureCache> = RwLock::new(TextureCache::new());
+    static ref MESH_CACHE: RwLock<MeshCache> = RwLock::new(MeshCache::new());
+    static ref MESH_ANIM_CACHE: RwLock<MeshAnimCache> = RwLock::new(MeshAnimCache::new());
 }
 
-pub fn load_env(env_name: &str, tex_cache: &mut TextureCache) -> [Arc<vdp::Texture>;6] {
-    let env_ft = tex_cache.load(format!("/cd/content/env/{}1ft.ktx", env_name).as_str()).unwrap();
-    let env_bk = tex_cache.load(format!("/cd/content/env/{}1bk.ktx", env_name).as_str()).unwrap();
-    let env_lf = tex_cache.load(format!("/cd/content/env/{}1lf.ktx", env_name).as_str()).unwrap();
-    let env_rt = tex_cache.load(format!("/cd/content/env/{}1rt.ktx", env_name).as_str()).unwrap();
-    let env_up = tex_cache.load(format!("/cd/content/env/{}1up.ktx", env_name).as_str()).unwrap();
-    let env_dn = tex_cache.load(format!("/cd/content/env/{}1dn.ktx", env_name).as_str()).unwrap();
+pub fn load_texture(path: &str) -> Result<Arc<vdp::Texture>, ResourceError> {
+    let tex_cache = &mut TEXTURE_CACHE.write().unwrap();
+    return tex_cache.load(path);
+}
+
+pub fn load_mesh(path: &str) -> Result<Arc<DBMesh>, ResourceError> {
+    let mesh_cache = &mut MESH_CACHE.write().unwrap();
+    return mesh_cache.load(path);
+}
+
+pub fn load_mesh_anim(path: &str) -> Result<Arc<DBAnimationClip>, ResourceError> {
+    let anim_cache = &mut MESH_ANIM_CACHE.write().unwrap();
+    return anim_cache.load(path);
+}
+
+pub fn load_env(env_name: &str) -> [Arc<vdp::Texture>;6] {
+    let env_ft = load_texture(format!("/cd/content/env/{}1ft.ktx", env_name).as_str()).unwrap();
+    let env_bk = load_texture(format!("/cd/content/env/{}1bk.ktx", env_name).as_str()).unwrap();
+    let env_lf = load_texture(format!("/cd/content/env/{}1lf.ktx", env_name).as_str()).unwrap();
+    let env_rt = load_texture(format!("/cd/content/env/{}1rt.ktx", env_name).as_str()).unwrap();
+    let env_up = load_texture(format!("/cd/content/env/{}1up.ktx", env_name).as_str()).unwrap();
+    let env_dn = load_texture(format!("/cd/content/env/{}1dn.ktx", env_name).as_str()).unwrap();
 
     [env_ft, env_bk, env_lf, env_rt, env_up, env_dn]
 }
 
+#[derive(Debug)]
+pub enum ResourceError {
+    ParseError,
+    IOError(IOError)
+}
+
 pub trait ResourceLoader<TResource> {
-    fn load_resource(path: &str) -> Result<TResource, IOError>;
+    fn load_resource(path: &str) -> Result<TResource, ResourceError>;
 }
 
 pub struct TextureLoader {
 }
 
 impl ResourceLoader<vdp::Texture> for TextureLoader {
-    fn load_resource(path: &str) -> Result<vdp::Texture, IOError> {
-        return load_texture(path);
+    fn load_resource(path: &str) -> Result<vdp::Texture, ResourceError> {    
+        let tex_file = match io::FileStream::open(path, io::FileMode::Read) {
+            Ok(v) => v,
+            Err(e) => return Err(ResourceError::IOError(e))
+        };
+
+        // decode KTX texture
+        let decoder = match ktx::Decoder::new(tex_file) {
+            Ok(v) => v,
+            Err(_) => return Err(ResourceError::ParseError)
+        };
+
+        // find appropriate VDP format
+        let tex_fmt = if decoder.gl_type() == GL_UNSIGNED_BYTE && decoder.gl_format() == GL_RGBA {
+            vdp::TextureFormat::RGBA8888
+        } else if decoder.gl_type() == GL_UNSIGNED_SHORT_5_6_5 && decoder.gl_format() == GL_RGB {
+            vdp::TextureFormat::RGB565
+        } else if decoder.gl_type() == GL_UNSIGNED_SHORT_4_4_4_4 && decoder.gl_format() == GL_RGBA {
+            vdp::TextureFormat::RGBA4444
+        } else if decoder.gl_internal_format() == GL_COMPRESSED_RGB_S3TC_DXT1_EXT || decoder.gl_internal_format() == GL_COMPRESSED_RGBA_S3TC_DXT1_EXT {
+            vdp::TextureFormat::DXT1
+        } else if decoder.gl_internal_format() == GL_COMPRESSED_RGBA_S3TC_DXT3_EXT {
+            vdp::TextureFormat::DXT3
+        } else {
+            println!("Failed decoding KTX image: unsupported pixel format");
+            return Err(ResourceError::ParseError);
+        };
+
+        // allocate VDP texture
+        let tex = vdp::Texture::new(
+            decoder.pixel_width() as i32,
+            decoder.pixel_height() as i32,
+            decoder.mipmap_levels() > 1, tex_fmt)
+            .expect("Failed allocating VDP texture");
+
+        // upload each mip slice
+        let mut level: i32 = 0;
+        for tex_level in decoder.read_textures() {
+            tex.set_texture_data(level, &tex_level);
+            level += 1;
+        }
+
+        Ok(tex)
+    }
+}
+
+pub struct MeshLoader {
+}
+
+impl ResourceLoader<DBMesh> for MeshLoader {
+    fn load_resource(path: &str) -> Result<DBMesh, ResourceError> {
+        let mut mesh_file = match io::FileStream::open(path, io::FileMode::Read) {
+            Ok(v) => v,
+            Err(e) => return Err(ResourceError::IOError(e))
+        };
+
+        let rootpath = Path::new(path).parent().unwrap().to_str().unwrap();
+
+        let tex_loader = |name: &str| {
+            let tex_path = format!("{}/{}.ktx", rootpath, name);
+            let tex_cache = &mut TEXTURE_CACHE.write().unwrap();
+            tex_cache.load(&tex_path)
+        };
+
+        match DBMesh::new(&mut mesh_file, tex_loader) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                match e {
+                    crate::dbmesh::DBMeshError::IOError(io_err) => {
+                        Err(ResourceError::IOError(io_err))
+                    }
+                    _ => {
+                        Err(ResourceError::ParseError)
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub struct MeshAnimLoader {
+}
+
+impl ResourceLoader<DBAnimationClip> for MeshAnimLoader {
+    fn load_resource(path: &str) -> Result<DBAnimationClip, ResourceError> {
+        let mut anim_file = match io::FileStream::open(path, io::FileMode::Read) {
+            Ok(v) => v,
+            Err(e) => return Err(ResourceError::IOError(e))
+        };
+
+        match DBAnimationClip::new(&mut anim_file) {
+            Ok(v) => Ok(v),
+            Err(_) => Err(ResourceError::ParseError)
+        }
     }
 }
 
@@ -97,7 +178,7 @@ impl<TResource, TResourceLoader> ResourceCache<TResource, TResourceLoader>
         }
     }
 
-    pub fn load(self: &mut Self, path: &str) -> Result<Arc<TResource>, IOError> {
+    pub fn load(self: &mut Self, path: &str) -> Result<Arc<TResource>, ResourceError> {
         if self.cache.contains_key(path) {
             // try and get a reference to the resource, upgraded to a new Rc
             // if that fails, the resource has been unloaded (we'll just load a new one)
@@ -112,9 +193,14 @@ impl<TResource, TResourceLoader> ResourceCache<TResource, TResourceLoader>
             };
         }
 
+        println!("Loading {}: {}", std::any::type_name::<TResource>(), path);
+
         let tex = match TResourceLoader::load_resource(path) {
             Ok(v) => v,
-            Err(e) => return Err(e)
+            Err(e) => {
+                println!("\t FAILED: {:?}", e);
+                return Err(e);
+            }
         };
 
         let res = Arc::new(tex);
@@ -126,3 +212,5 @@ impl<TResource, TResourceLoader> ResourceCache<TResource, TResourceLoader>
 }
 
 pub type TextureCache = ResourceCache<vdp::Texture, TextureLoader>;
+pub type MeshCache = ResourceCache<DBMesh, MeshLoader>;
+pub type MeshAnimCache = ResourceCache<DBAnimationClip, MeshAnimLoader>;

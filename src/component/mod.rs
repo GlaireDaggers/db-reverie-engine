@@ -8,3 +8,4 @@ pub mod mapmodel;
 pub mod rotator;
 pub mod door;
 pub mod triggerable;
+pub mod mesh;

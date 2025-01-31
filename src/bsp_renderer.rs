@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc, vec};
 use dbsdk_rs::{field_offset::offset_of, math::{Matrix4x4, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture}};
 use lazy_static::lazy_static;
 
-use crate::{asset_loader::TextureCache, bsp_file::{BspFile, Edge, SURF_NODRAW, SURF_NOLM, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common::{self, aabb_aabb_intersects, aabb_frustum}, println};
+use crate::{asset_loader::load_texture, bsp_file::{BspFile, Edge, SURF_NODRAW, SURF_NOLM, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP}, common::{self, aabb_aabb_intersects, aabb_frustum}};
 
 pub const NUM_CUSTOM_LIGHT_LAYERS: usize = 30;
 pub const CUSTOM_LIGHT_LAYER_START: usize = 32;
@@ -451,7 +451,7 @@ fn draw_transparent_geom(bsp: &BspFile, animation_time: f32, textures: &BspMapTe
 }
 
 impl BspMapTextures {
-    pub fn new(bsp_file: &BspFile, texture_cache: &mut TextureCache) -> BspMapTextures {
+    pub fn new(bsp_file: &BspFile) -> BspMapTextures {
         // load unique textures
         let mut loaded_textures: Vec<Option<Arc<Texture>>> = Vec::new();
 
@@ -472,14 +472,9 @@ impl BspMapTextures {
                 opaque_meshes.push(i);
             }
 
-            println!("Loading {}", tex_info.texture_name);
-
-            let tex = match texture_cache.load(format!("/cd/content/textures/{}.ktx", &tex_info.texture_name).as_str()) {
+            let tex = match load_texture(format!("/cd/content/textures/{}.ktx", &tex_info.texture_name).as_str()) {
                 Ok(v) => Some(v),
-                Err(_) => {
-                    println!("Failed loading {}", tex_info.texture_name);
-                    None
-                }
+                Err(_) => None
             };
 
             loaded_textures.push(tex);
