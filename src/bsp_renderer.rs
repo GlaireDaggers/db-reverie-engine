@@ -105,7 +105,7 @@ impl LmAtlasPacker {
 }
 
 struct Model {
-    geometry: Vec<(usize, Vec<PackedVertex>, Vec<Vector2>)>
+    geometry: Vec<(usize, Vec<PackedVertex>, Vec<u16>, Vec<Vector2>)>
 }
 
 pub struct BspMapTextures {
@@ -119,17 +119,20 @@ pub struct BspMapModelRenderer {
     models: Vec<Model>,
     lm_atlas: LmAtlasPacker,
     geo_buff: Vec<PackedVertex>,
+    geo_buff2: Vec<PackedVertex>,
 }
 
 pub struct BspMapRenderer {
     vis: Vec<bool>,
     prev_leaf: i32,
-    meshes: Vec<Vec<PackedVertex>>,
+    mesh_vertices: Vec<Vec<PackedVertex>>,
+    mesh_indices: Vec<Vec<u16>>,
     lm_uvs: Vec<Vec<Vector2>>,
     visible_leaves: Vec<bool>,
     lm_atlas: LmAtlasPacker,
     drawn_faces: Vec<bool>,
     geo_buff: Vec<PackedVertex>,
+    geo_buff2: Vec<PackedVertex>,
 }
 
 fn update_lm_animation(light_layers: &[f32;NUM_CUSTOM_LIGHT_LAYERS], animation_time: f32, lm_atlas: &LmAtlasPacker, bsp: &BspFile) {
@@ -175,7 +178,7 @@ fn update_lm_animation(light_layers: &[f32;NUM_CUSTOM_LIGHT_LAYERS], animation_t
     }
 }
 
-fn unpack_face(bsp: &BspFile, textures: &BspMapTextures, face_idx: usize, edge_buffer: &mut Vec<Edge>, geo: &mut Vec<PackedVertex>, lm_uvs: &mut Vec<Vector2>, lm: &mut LmAtlasPacker) {
+fn unpack_face(bsp: &BspFile, textures: &BspMapTextures, face_idx: usize, edge_buffer: &mut Vec<Edge>, geo: &mut Vec<PackedVertex>, index: &mut Vec<u16>, lm_uvs: &mut Vec<Vector2>, lm: &mut LmAtlasPacker) {
     let face = &bsp.face_lump.faces[face_idx];
     let tex_idx = face.texture_info as usize;
     let tex_info = &bsp.tex_info_lump.textures[tex_idx];
@@ -273,67 +276,47 @@ fn unpack_face(bsp: &BspFile, textures: &BspMapTextures, face_idx: usize, edge_b
     };
 
     // build triangle fan out of edges (note: clockwise winding)
-    for i in 1..edge_buffer.len() - 1 {
-        let pos_a = edge_buffer[0].a as usize;
-        let pos_b = edge_buffer[i].a as usize;
-        let pos_c = edge_buffer[i].b as usize;
+    let idx_start = geo.len();
 
-        let pos_a = bsp.vertex_lump.vertices[pos_a];
-        let pos_b = bsp.vertex_lump.vertices[pos_b];
-        let pos_c = bsp.vertex_lump.vertices[pos_c];
+    for i in 0..edge_buffer.len() {
+        let pos = edge_buffer[i].a as usize;
+        let pos = bsp.vertex_lump.vertices[pos];
 
-        let mut tex_a = Vector2::new(
-            Vector3::dot(&pos_a, &tex_info.u_axis) + tex_info.u_offset,
-            Vector3::dot(&pos_a, &tex_info.v_axis) + tex_info.v_offset
+        let mut tex = Vector2::new(
+            Vector3::dot(&pos, &tex_info.u_axis) + tex_info.u_offset,
+            Vector3::dot(&pos, &tex_info.v_axis) + tex_info.v_offset
         );
 
-        let mut tex_b = Vector2::new(
-            Vector3::dot(&pos_b, &tex_info.u_axis) + tex_info.u_offset,
-            Vector3::dot(&pos_b, &tex_info.v_axis) + tex_info.v_offset
-        );
-
-        let mut tex_c = Vector2::new(
-            Vector3::dot(&pos_c, &tex_info.u_axis) + tex_info.u_offset,
-            Vector3::dot(&pos_c, &tex_info.v_axis) + tex_info.v_offset
-        );
-
-        let lm_a = (((tex_a - tex_min) / (tex_max - tex_min)) * lm_region_scale) + lm_region_offset;
-        let lm_b = (((tex_b - tex_min) / (tex_max - tex_min)) * lm_region_scale) + lm_region_offset;
-        let lm_c = (((tex_c - tex_min) / (tex_max - tex_min)) * lm_region_scale) + lm_region_offset;
+        let lm = (((tex - tex_min) / (tex_max - tex_min)) * lm_region_scale) + lm_region_offset;
 
         match &textures.loaded_textures[tex_idx] {
             Some(v) => {
                 let sc = Vector2::new(1.0 / v.width as f32, 1.0 / v.height as f32);
-                tex_a = tex_a * sc;
-                tex_b = tex_b * sc;
-                tex_c = tex_c * sc;
+                tex = tex * sc;
             }
             None => {
                 let sc = Vector2::new(1.0 / 64.0, 1.0 / 64.0);
-                tex_a = tex_a * sc;
-                tex_b = tex_b * sc;
-                tex_c = tex_c * sc;
+                tex = tex * sc;
             }
         };
 
-        let pos_a = Vector4::new(pos_a.x, pos_a.y, pos_a.z, 1.0);
-        let pos_b = Vector4::new(pos_b.x, pos_b.y, pos_b.z, 1.0);
-        let pos_c = Vector4::new(pos_c.x, pos_c.y, pos_c.z, 1.0);
+        let pos = Vector4::new(pos.x, pos.y, pos.z, 1.0);
 
-        let vtx_a = PackedVertex::new(pos_a, tex_a, col, 
-            Color32::new(0, 0, 0, 0));
-        let vtx_b = PackedVertex::new(pos_b, tex_b, col, 
-            Color32::new(0, 0, 0, 0));
-        let vtx_c = PackedVertex::new(pos_c, tex_c, col, 
+        let vtx = PackedVertex::new(pos, tex, col, 
             Color32::new(0, 0, 0, 0));
 
-        geo.push(vtx_a);
-        geo.push(vtx_b);
-        geo.push(vtx_c);
+        geo.push(vtx);
+        lm_uvs.push(lm);
+    }
 
-        lm_uvs.push(lm_a);
-        lm_uvs.push(lm_b);
-        lm_uvs.push(lm_c);
+    for i in 1..edge_buffer.len() - 1 {
+        let idx0 = idx_start;
+        let idx1 = idx_start + i;
+        let idx2 = idx_start + i + 1;
+
+        index.push(idx0 as u16);
+        index.push(idx1 as u16);
+        index.push(idx2 as u16);
     }
 }
 
@@ -361,7 +344,19 @@ fn draw_opaque_geom_setup(model: &Matrix4x4, camera_view: &Matrix4x4, camera_pro
     vdp::blend_equation(vdp::BlendEquation::Add);
 }
 
-fn draw_opaque_geom(bsp: &BspFile, animation_time: f32, textures: &BspMapTextures, texture_index: usize, geo_buff: &mut Vec<PackedVertex>, m: &Vec<PackedVertex>, lm_uvs: &Vec<Vector2>, lm: &LmAtlasPacker) {
+fn unpack_indexed(src: &[PackedVertex], dst: &mut [PackedVertex], idx: &[u16]) {
+    for (i, v) in idx.iter().enumerate() {
+        dst[i] = src[*v as usize];
+    }
+}
+
+fn copy_lm_indexed(src: &[Vector2], dst: &mut [PackedVertex], idx: &[u16]) {
+    for (i, v) in idx.iter().enumerate() {
+        dst[i].texcoord = src[*v as usize];
+    }
+}
+
+fn draw_opaque_geom(bsp: &BspFile, animation_time: f32, textures: &BspMapTextures, texture_index: usize, geo_buff: &mut Vec<PackedVertex>, geo_buff2: &mut Vec<PackedVertex>, m: &Vec<PackedVertex>, idx: &Vec<u16>, lm_uvs: &Vec<Vector2>, lm: &LmAtlasPacker) {
     match &textures.loaded_textures[texture_index] {
         Some(v) => {
             vdp::bind_texture(Some(v));
@@ -377,6 +372,10 @@ fn draw_opaque_geom(bsp: &BspFile, animation_time: f32, textures: &BspMapTexture
         geo_buff.clear();
         geo_buff.extend_from_slice(m);
 
+        geo_buff2.clear();
+        geo_buff2.reserve(idx.len());
+        unsafe { geo_buff2.set_len(idx.len()) };
+
         if bsp.tex_info_lump.textures[texture_index].flags & SURF_WARP != 0 {
             apply_warp(animation_time, geo_buff);
         }
@@ -387,13 +386,12 @@ fn draw_opaque_geom(bsp: &BspFile, animation_time: f32, textures: &BspMapTexture
         vdp::blend_func(vdp::BlendFactor::One, vdp::BlendFactor::Zero);
 
         Matrix4x4::transform_vertex_simd(geo_buff, offset_of!(PackedVertex => position));
-        vdp::draw_geometry_packed(vdp::Topology::TriangleList, &geo_buff);
+        unpack_indexed(geo_buff, geo_buff2, idx);
+        vdp::draw_geometry_packed(vdp::Topology::TriangleList, &geo_buff2);
 
         if bsp.tex_info_lump.textures[texture_index].flags & SURF_NOLM == 0 {
             // copy lightmap UVs & draw again (we don't need to re-transform)
-            for i in 0..geo_buff.len() {
-                geo_buff[i].texcoord = lm_uvs[i];
-            }
+            copy_lm_indexed(lm_uvs, geo_buff2, idx);
 
             vdp::depth_func(vdp::Compare::Equal);
             vdp::depth_write(false);
@@ -401,7 +399,7 @@ fn draw_opaque_geom(bsp: &BspFile, animation_time: f32, textures: &BspMapTexture
 
             vdp::bind_texture(Some(&lm.lm));
             vdp::set_sample_params(vdp::TextureFilter::Linear, vdp::TextureWrap::Repeat, vdp::TextureWrap::Repeat);
-            vdp::draw_geometry_packed(vdp::Topology::TriangleList, &geo_buff);
+            vdp::draw_geometry_packed(vdp::Topology::TriangleList, &geo_buff2);
         }
     }
 }
@@ -424,7 +422,7 @@ fn draw_transparent_geom_setup(model: &Matrix4x4, camera_view: &Matrix4x4, camer
     vdp::blend_func(vdp::BlendFactor::SrcAlpha, vdp::BlendFactor::OneMinusSrcAlpha);
 }
 
-fn draw_transparent_geom(bsp: &BspFile, animation_time: f32, textures: &BspMapTextures, texture_index: usize, geo_buff: &mut Vec<PackedVertex>, m: &Vec<PackedVertex>) {
+fn draw_transparent_geom(bsp: &BspFile, animation_time: f32, textures: &BspMapTextures, texture_index: usize, geo_buff: &mut Vec<PackedVertex>, geo_buff2: &mut Vec<PackedVertex>, m: &Vec<PackedVertex>, idx: &Vec<u16>) {
     match &textures.loaded_textures[texture_index] {
         Some(v) => {
             vdp::bind_texture(Some(v));
@@ -440,13 +438,18 @@ fn draw_transparent_geom(bsp: &BspFile, animation_time: f32, textures: &BspMapTe
         geo_buff.clear();
         geo_buff.extend_from_slice(m);
 
+        geo_buff2.clear();
+        geo_buff2.reserve(idx.len());
+        unsafe { geo_buff2.set_len(idx.len()) };
+
         if bsp.tex_info_lump.textures[texture_index].flags & SURF_WARP != 0 {
             apply_warp(animation_time, geo_buff);
         }
 
         // transform vertices & draw
         Matrix4x4::transform_vertex_simd(geo_buff, offset_of!(PackedVertex => position));
-        vdp::draw_geometry_packed(vdp::Topology::TriangleList, &geo_buff);
+        unpack_indexed(geo_buff, geo_buff2, idx);
+        vdp::draw_geometry_packed(vdp::Topology::TriangleList, &geo_buff2);
     }
 }
 
@@ -505,14 +508,15 @@ impl BspMapModelRenderer {
 
             for face_idx in start_face_idx..end_face_idx {
                 let mut geom = Vec::new();
+                let mut idx = Vec::new();
                 let mut lm_uv = Vec::new();
 
                 let face = &bsp_file.face_lump.faces[face_idx];
                 let tex_idx = face.texture_info as usize;
 
-                unpack_face(bsp_file, textures, face_idx, &mut edges, &mut geom, &mut lm_uv, &mut lm_atlas);
+                unpack_face(bsp_file, textures, face_idx, &mut edges, &mut geom, &mut idx, &mut lm_uv, &mut lm_atlas);
 
-                model_geom.push((tex_idx, geom, lm_uv));
+                model_geom.push((tex_idx, geom, idx, lm_uv));
             }
 
             models.push(Model {
@@ -520,7 +524,7 @@ impl BspMapModelRenderer {
             });
         }
 
-        BspMapModelRenderer { models, lm_atlas, geo_buff: Vec::with_capacity(1024) }
+        BspMapModelRenderer { models, lm_atlas, geo_buff: Vec::with_capacity(1024), geo_buff2: Vec::with_capacity(1024) }
     }
 
     /// Call each frame before rendering. Updates lightmap animation
@@ -534,11 +538,11 @@ impl BspMapModelRenderer {
 
         draw_opaque_geom_setup(model_transform, camera_view, camera_proj);
 
-        for (i, m, lm_uvs) in &model.geometry {
+        for (i, m, idx, lm_uvs) in &model.geometry {
             let tex_info = &bsp.tex_info_lump.textures[*i];
 
             if tex_info.flags & SURF_TRANS33 == 0 && tex_info.flags & SURF_TRANS66 == 0 {
-                draw_opaque_geom(bsp, animation_time, textures, *i, &mut self.geo_buff, m, lm_uvs, &self.lm_atlas);
+                draw_opaque_geom(bsp, animation_time, textures, *i, &mut self.geo_buff, &mut self.geo_buff2, m, idx, lm_uvs, &self.lm_atlas);
             }
         }
     }
@@ -549,11 +553,11 @@ impl BspMapModelRenderer {
 
         draw_transparent_geom_setup(model_transform, camera_view, camera_proj);
 
-        for (i, m, _) in &model.geometry {
+        for (i, m, idx, _) in &model.geometry {
             let tex_info = &bsp.tex_info_lump.textures[*i];
 
             if tex_info.flags & SURF_TRANS33 != 0 || tex_info.flags & SURF_TRANS66 != 0 {
-                draw_transparent_geom(bsp, animation_time, textures, *i, &mut self.geo_buff, m);
+                draw_transparent_geom(bsp, animation_time, textures, *i, &mut self.geo_buff, &mut self.geo_buff2, m, idx);
             }
         }
     }
@@ -571,12 +575,14 @@ impl BspMapRenderer {
         BspMapRenderer {
             vis: vec![false;num_clusters],
             visible_leaves: vec![false;num_leaves],
-            meshes: vec![Vec::new();num_textures],
+            mesh_vertices: vec![Vec::new();num_textures],
+            mesh_indices: vec![Vec::new();num_textures],
             lm_uvs: vec![Vec::new();num_textures],
             drawn_faces: vec![false;num_faces],
             prev_leaf: -1,
             lm_atlas,
-            geo_buff: Vec::with_capacity(1024)
+            geo_buff: Vec::with_capacity(1024),
+            geo_buff2: Vec::with_capacity(1024),
         }
     }
 
@@ -629,8 +635,12 @@ impl BspMapRenderer {
         Self::update_recursive(bsp, 0, frustum, &self.vis, &mut self.visible_leaves);
 
         // build geometry for visible leaves
-        for m in &mut self.meshes {
+        for m in &mut self.mesh_vertices {
             m.clear();
+        }
+
+        for idx in &mut self.mesh_indices {
+            idx.clear();
         }
 
         for m in &mut self.lm_uvs {
@@ -659,7 +669,7 @@ impl BspMapRenderer {
 
                     let face = &bsp.face_lump.faces[face_idx];
                     let tex_idx = face.texture_info as usize;
-                    unpack_face(bsp, textures, face_idx, &mut edges, &mut self.meshes[tex_idx], &mut self.lm_uvs[tex_idx], &mut self.lm_atlas);
+                    unpack_face(bsp, textures, face_idx, &mut edges, &mut self.mesh_vertices[tex_idx], &mut self.mesh_indices[tex_idx], &mut self.lm_uvs[tex_idx], &mut self.lm_atlas);
                 }
             }
         }
@@ -751,10 +761,11 @@ impl BspMapRenderer {
         draw_opaque_geom_setup(&Matrix4x4::identity(), camera_view, camera_proj);
 
         for i in &textures.opaque_meshes {
-            let m = &self.meshes[*i];
+            let m = &self.mesh_vertices[*i];
+            let idx = &self.mesh_indices[*i];
             let lm_uvs = &self.lm_uvs[*i];
 
-            draw_opaque_geom(bsp, animation_time, textures, *i, &mut self.geo_buff, &m, &lm_uvs, &self.lm_atlas);
+            draw_opaque_geom(bsp, animation_time, textures, *i, &mut self.geo_buff, &mut self.geo_buff2, &m, &idx, &lm_uvs, &self.lm_atlas);
         }
     }
 
@@ -763,9 +774,10 @@ impl BspMapRenderer {
         draw_transparent_geom_setup(&Matrix4x4::identity(), camera_view, camera_proj);
 
         for i in &textures.transp_meshes {
-            let m = &self.meshes[*i];
+            let m = &self.mesh_vertices[*i];
+            let idx = &self.mesh_indices[*i];
 
-            draw_transparent_geom(bsp, animation_time, textures, *i, &mut self.geo_buff, &m);
+            draw_transparent_geom(bsp, animation_time, textures, *i, &mut self.geo_buff, &mut self.geo_buff2, &m, &idx);
         }
     }
 }

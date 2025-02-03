@@ -5,6 +5,7 @@ extern crate ktx;
 extern crate hecs;
 extern crate regex;
 extern crate half;
+extern crate qoaudio;
 
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 
@@ -12,11 +13,12 @@ use asset_loader::{load_env, load_mesh, load_mesh_anim};
 use bsp_file::BspFile;
 use bsp_renderer::{BspMapModelRenderer, BspMapRenderer, BspMapTextures, NUM_CUSTOM_LIGHT_LAYERS};
 use common::aabb_aabb_intersects;
-use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterController, collider::ColliderBounds, door::{Door, DoorLink, DoorOpener}, fpview::FPView, mapmodel::MapModel, mesh::{Mesh, MeshAnim}, playerinput::PlayerInput, rotator::Rotator, transform3d::Transform3D, triggerable::{TriggerLink, TriggerState}};
+use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterController, collider::ColliderBounds, door::{Door, DoorLink, DoorOpener}, fpview::FPView, light::Light, mapmodel::MapModel, mesh::{Mesh, MeshAnim}, playerinput::PlayerInput, rotator::Rotator, transform3d::Transform3D, triggerable::{TriggerLink, TriggerState}};
 use dbanim::AnimationCurveLoopMode;
 use hecs::{CommandBuffer, World};
 use lazy_static::lazy_static;
 use dbsdk_rs::{db, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::{Quaternion, Vector3}, vdp::{self, Texture}};
+use music_player::MusicPlayer;
 use system::{anim_system::sk_anim_system_update, character_system::{character_apply_input_update, character_init, character_input_update, character_rotation_update, character_update}, door_system::door_system_update, flycam_system::flycam_system_update, fpcam_system::fpcam_update, fpview_system::{fpview_eye_update, fpview_input_system_update}, render_system::render_system, rotator_system::rotator_system_update, triggerable_system::trigger_link_system_update};
 
 pub mod common;
@@ -31,6 +33,7 @@ pub mod parse_utils;
 
 pub mod component;
 pub mod system;
+pub mod music_player;
 
 lazy_static! {
     static ref GAME_STATE: Mutex<GameState> = Mutex::new(GameState::new());
@@ -72,6 +75,7 @@ struct GameState {
     time_data: TimeData,
     map_data: Option<MapData>,
     env: Option<[Arc<Texture>;6]>,
+    music_player: Option<MusicPlayer>,
 }
 
 impl MapData {
@@ -126,6 +130,16 @@ impl GameState {
                     for (key, val) in entity_data {
                         println!("worldspawn: {} = {}", key, val);
                     }
+                }
+                "light" => {
+                    let light_pos = parse_utils::parse_prop_vec3(&entity_data, "origin", Vector3::zero());
+                    let light_intensity = parse_utils::parse_prop::<f32>(&entity_data, "light", 300.0);
+                    let light_color = parse_utils::parse_prop_vec3(&entity_data, "_color", Vector3::new(1.0, 1.0, 1.0));
+
+                    world.spawn((
+                        Transform3D::default().with_position(light_pos),
+                        Light { color: light_color, max_radius: light_intensity }
+                    ));
                 }
                 "func_door" => {
                     let model_idx = parse_utils::parse_prop_modelindex(&entity_data, "model", usize::MAX);
@@ -304,7 +318,7 @@ impl GameState {
             FPView::new(-player_start_rot, 0.0, 40.0),
             CharacterController::default(),
             PlayerInput::new(),
-            DoorOpener {}
+            DoorOpener {},
         ));
 
         world.spawn((
@@ -318,25 +332,33 @@ impl GameState {
             Transform3D::default().with_scale(Vector3::new(20.0, 20.0, 20.0)).with_rotation(Quaternion::from_euler(Vector3::new(90.0_f32.to_radians(), 0.0, 0.0))),
             Mesh {
                 mesh: load_mesh("/cd/content/model/leigh/leigh.dbm").unwrap(),
-                bounds_offset: Vector3::new(0.0, 0.5, 0.0),
-                bounds_extents: Vector3::new(1.0, 2.0, 1.0),
+                bounds_offset: Vector3::new(0.0, 1.25, 0.0),
+                bounds_extents: Vector3::new(1.0, 1.5, 1.0),
             },
             MeshAnim { anim: load_mesh_anim("/cd/content/model/leigh/leigh_idle.dba").unwrap(), loop_mode: AnimationCurveLoopMode::Repeat, time: 0.0 },
             // CharacterController::default(),
             ColliderBounds { bounds_offset: Vector3::new(0.0, 0.5, 0.0), bounds_extents: Vector3::new(1.0, 2.0, 1.0) }
         ));
 
+        let music_player = MusicPlayer::new("/cd/content/mus/b8d_toys.qoa", false).unwrap();
+
         GameState {
             gamepad: Gamepad::new(gamepad::GamepadSlot::SlotA),
             world,
             time_data: TimeData::default(),
             map_data: Some(map_data),
-            env: Some(env)
+            env: Some(env),
+            music_player: Some(music_player),
         }
     }
 
     pub fn tick(self: &mut Self) {
         const DELTA: f32 = 1.0 / 60.0;
+
+        // music playback
+        if let Some(music_player) = &mut self.music_player {
+            music_player.update();
+        }
 
         // update input state
         let gp_state = self.gamepad.read_state();

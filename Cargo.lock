@@ -149,6 +149,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qoaudio"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf46b47dc3906b2c2bc928a04398dd483e66e3d0cc56913355ba236ab9fa2441"
+
+[[package]]
 name = "quote"
 version = "1.0.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -196,6 +202,7 @@ dependencies = [
  "hecs",
  "ktx",
  "lazy_static",
+ "qoaudio",
  "regex",
 ]
 

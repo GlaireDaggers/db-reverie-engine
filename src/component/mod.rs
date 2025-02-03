@@ -10,3 +10,4 @@ pub mod door;
 pub mod triggerable;
 pub mod mesh;
 pub mod collider;
+pub mod light;

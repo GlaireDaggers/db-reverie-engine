@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dbsdk_rs::{field_offset::offset_of, math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture, Vertex}};
 use hecs::World;
 
-use crate::{common::{self, aabb_frustum, coord_space_transform, extract_frustum, transform_aabb}, component::{camera::Camera, mapmodel::MapModel, mesh::{Mesh, SkeletalPoseState}, transform3d::Transform3D}, dbmesh::DBMeshPart, sh::SphericalHarmonics, MapData, TimeData};
+use crate::{bsp_file::{BspFile, MASK_SOLID}, common::{self, aabb_frustum, coord_space_transform, extract_frustum, transform_aabb}, component::{camera::Camera, light::Light, mapmodel::MapModel, mesh::{Mesh, SkeletalPoseState}, transform3d::Transform3D}, dbmesh::DBMeshPart, sh::SphericalHarmonics, MapData, TimeData};
 
 fn _draw_aabb(center: Vector3, extents: Vector3, camera_view: &Matrix4x4, camera_proj: &Matrix4x4, col: Color32) {
     let c0 = center + Vector3::new(-extents.x, -extents.y, -extents.z);
@@ -173,7 +173,7 @@ fn draw_skinned_meshpart(vtx_buffer: &mut Vec<Vertex>, meshpart: &DBMeshPart, mv
 
         if vertex.bweight[1] > 0 {
             sk1 = bonepalette[vertex.bidx[1] as usize] * sk1;
-            nrm1 = bonepalette[vertex.bidx[0] as usize] * nrm1;
+            nrm1 = bonepalette[vertex.bidx[1] as usize] * nrm1;
         }
 
         let weight0 = (vertex.bweight[0] as f32) / 255.0;
@@ -227,6 +227,21 @@ fn draw_skinned_meshpart(vtx_buffer: &mut Vec<Vertex>, meshpart: &DBMeshPart, mv
     vdp::draw_geometry(vdp::Topology::TriangleList, vtx_buffer.as_slice());
 }
 
+fn gather_lighting(light: &mut SphericalHarmonics, pos: &Vector3, lights: &[(Vector3, Vector3, f32)], bsp: &BspFile) {
+    for (light_pos, light_color, light_radius) in lights {
+        let dir = *light_pos - *pos;
+        let dist = dir.length();
+
+        if dist > 0.0 && dist < *light_radius {
+            if bsp.linetrace(0, MASK_SOLID, pos, light_pos).fraction == 1.0 {
+                let dir = dir / dist;
+                let falloff = 1.0 - (dist / *light_radius);
+                light.add_directional_light(dir, *light_color * falloff);
+            }
+        }
+    }
+}
+
 /// System which performs all rendering (world + entities)
 pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<[Arc<Texture>;6]>, world: &mut World) {
     // gather map models
@@ -247,11 +262,19 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
         .iter()
         .collect::<Vec<_>>();
 
+    // gather lights
+    let mut light_iter = world.query::<(&Transform3D, &Light)>();
+    let lights = light_iter
+        .iter()
+        .collect::<Vec<_>>();
+
     // gather cameras
     let mut camera_iter = world.query::<(&Transform3D, &Camera)>();
     let cameras = camera_iter
         .iter()
         .collect::<Vec<_>>();
+
+    let mut light_data = Vec::with_capacity(lights.len());
 
     let mut camera_index = 0;
     for (_, (transform, camera)) in cameras {
@@ -313,6 +336,16 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
         // draw opaque geometry
         renderer.draw_opaque(&map_data.map, &map_data.map_textures, time.total_time, &cam_view, &cam_proj);
 
+        // cull light sources
+        light_data.clear();
+        for (_, (light_transform, light)) in &lights {
+            let light_bounds_extents = Vector3::new(light.max_radius, light.max_radius, light.max_radius);
+
+            if renderer.check_vis(&map_data.map, light_transform.position, light_bounds_extents) {
+                light_data.push((light_transform.position, light.color, light.max_radius));
+            }
+        }
+
         // gather visible models
         let mut visible_models = Vec::new();
         let mut model_mat: Matrix4x4 = Matrix4x4::identity();
@@ -347,6 +380,11 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
 
             let (bounds_center, bounds_extents) = transform_aabb(mesh.bounds_offset, mesh.bounds_extents, &model_mat);
 
+            // calculate lighting
+            let mut light = SphericalHarmonics::new();
+            light.add_ambient_light(Vector3::new(0.25, 0.1, 0.0));
+            gather_lighting(&mut light, &bounds_center, &light_data, &map_data.map);
+
             let vis = aabb_frustum(bounds_center - bounds_extents, bounds_center + bounds_extents, &frustum) && renderer.check_vis(&map_data.map, bounds_center, bounds_extents);
 
             if vis {
@@ -354,7 +392,7 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
                 Matrix4x4::mul_simd(&Matrix4x4::rotation(mesh_transform.rotation));
                 Matrix4x4::store_simd(&mut normal2world);
 
-                visible_meshes.push((model_mat, normal2world, &mesh.mesh));
+                visible_meshes.push((model_mat, light, normal2world, &mesh.mesh));
             }
         }
 
@@ -369,6 +407,11 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
 
             let (bounds_center, bounds_extents) = transform_aabb(mesh.bounds_offset, mesh.bounds_extents, &model_mat);
 
+            // calculate lighting
+            let mut light = SphericalHarmonics::new();
+            light.add_ambient_light(Vector3::new(0.25, 0.1, 0.0));
+            gather_lighting(&mut light, &bounds_center, &light_data, &map_data.map);
+
             let vis = aabb_frustum(bounds_center - bounds_extents, bounds_center + bounds_extents, &frustum) && renderer.check_vis(&map_data.map, bounds_center, bounds_extents);
 
             if vis {
@@ -376,7 +419,7 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
                 Matrix4x4::mul_simd(&Matrix4x4::rotation(mesh_transform.rotation));
                 Matrix4x4::store_simd(&mut normal2world);
 
-                visible_skinned_meshes.push((model_mat, normal2world, &mesh.mesh, &pose_state.bone_palette));
+                visible_skinned_meshes.push((model_mat, light, normal2world, &mesh.mesh, &pose_state.bone_palette));
             }
         }
 
@@ -385,15 +428,10 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
             map_data.map_models.draw_model_opaque(&map_data.map, time.total_time, &map_data.map_textures, *id, transform, &cam_view, &cam_proj);
         }
 
-        // test lighting
-        let mut light = SphericalHarmonics::new();
-        light.add_ambient_light(Vector3::new(0.25, 0.1, 0.0));
-        light.add_directional_light(Vector3::new(0.0, 0.0, 1.0), Vector3::new(1.0, 1.0, 1.0));
-
         let mut vtx_buffer = Vec::with_capacity(1024);
 
         // draw static meshes
-        for (local2world, normal2world, mesh) in &visible_meshes {
+        for (local2world, light, normal2world, mesh) in &visible_meshes {
             Matrix4x4::load_identity_simd();
             Matrix4x4::mul_simd(local2world);
             Matrix4x4::mul_simd(&cam_view);
@@ -406,7 +444,8 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
             }
         }
 
-        for (local2world, normal2world, mesh, pose_state) in &visible_skinned_meshes {
+        // draw skinned meshes
+        for (local2world, light, normal2world, mesh, pose_state) in &visible_skinned_meshes {
             Matrix4x4::load_identity_simd();
             Matrix4x4::mul_simd(local2world);
             Matrix4x4::mul_simd(&cam_view);

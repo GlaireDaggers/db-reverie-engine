@@ -74,8 +74,8 @@ pub fn transform_aabb(offset: Vector3, extents: Vector3, local2world: &Matrix4x4
 
     // transform each corner to world space & get min/max extents
 
-    let mut min = Vector3::zero();
-    let mut max = Vector3::zero();
+    let mut min = Vector3::new(f32::MAX, f32::MAX, f32::MAX);
+    let mut max = Vector3::new(f32::MIN, f32::MIN, f32::MIN);
 
     for c in corners {
         let wspace_c = *local2world * Vector4::new(c.x, c.y, c.z, 1.0);
