@@ -17,7 +17,7 @@ use component::{camera::{Camera, FPCamera}, charactercontroller::CharacterContro
 use dbanim::AnimationCurveLoopMode;
 use hecs::{CommandBuffer, World};
 use lazy_static::lazy_static;
-use dbsdk_rs::{db, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, math::{Quaternion, Vector3}, vdp::{self, Texture}};
+use dbsdk_rs::{db::{self, log}, gamepad::{self, Gamepad}, io::{FileMode, FileStream}, logfmt, math::{Quaternion, Vector3}, vdp::{self, Texture}};
 use music_player::MusicPlayer;
 use system::{anim_system::sk_anim_system_update, character_system::{character_apply_input_update, character_init, character_input_update, character_rotation_update, character_update}, door_system::door_system_update, flycam_system::flycam_system_update, fpcam_system::fpcam_update, fpview_system::{fpview_eye_update, fpview_input_system_update}, render_system::render_system, rotator_system::rotator_system_update, triggerable_system::trigger_link_system_update};
 
@@ -37,12 +37,6 @@ pub mod music_player;
 
 lazy_static! {
     static ref GAME_STATE: Mutex<GameState> = Mutex::new(GameState::new());
-}
-
-// override the default "println" macro
-#[macro_export]
-macro_rules! println {
-    ($($arg:tt)*) => (dbsdk_rs::db::log(format!($($arg)*).as_str()));
 }
 
 #[derive(Default)]
@@ -80,12 +74,12 @@ struct GameState {
 
 impl MapData {
     pub fn load_map(map_name: &str) -> MapData {
-        println!("Loading map: {}", map_name);
+        logfmt!("Loading map: {}", map_name);
         let mut bsp_file = FileStream::open(format!("/cd/content/maps/{}.bsp", map_name).as_str(), FileMode::Read).unwrap();
         let bsp = BspFile::new(&mut bsp_file);
         let bsp_textures = BspMapTextures::new(&bsp);
         let bsp_models = BspMapModelRenderer::new(&bsp, &bsp_textures);
-        println!("Map loaded");
+        logfmt!("Map loaded");
 
         MapData {
             map: bsp,
@@ -98,7 +92,7 @@ impl MapData {
 
     pub fn update_renderer_cache(self: &mut Self, index: usize) {
         while self.map_renderers.len() <= index {
-            println!("Allocating map renderer for camera {}", index);
+            logfmt!("Allocating map renderer for camera {}", index);
             self.map_renderers.push(BspMapRenderer::new(&self.map));
         }
     }
@@ -128,7 +122,7 @@ impl GameState {
                 }
                 "worldspawn" => {
                     for (key, val) in entity_data {
-                        println!("worldspawn: {} = {}", key, val);
+                        logfmt!("worldspawn: {} = {}", key, val);
                     }
                 }
                 "light" => {
@@ -281,7 +275,7 @@ impl GameState {
         let mut cmd_buf = CommandBuffer::new();
         for (e, targetname) in pending_resolve_targets {
             if !targetmap.contains_key(&targetname) {
-                println!("Couldn't find trigger target: {}", &targetname);
+                logfmt!("Couldn't find trigger target: {}", &targetname);
             }
             else {
                 let target_ent = targetmap[&targetname];
@@ -319,6 +313,7 @@ impl GameState {
             CharacterController::default(),
             PlayerInput::new(),
             DoorOpener {},
+            Light { max_radius: 200.0, color: Vector3::new(1.0, 1.0, 1.0) }
         ));
 
         world.spawn((

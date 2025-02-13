@@ -9,8 +9,8 @@
             "preLaunchTask": "build",
             "type": "lldb",
             "request": "launch",
-            "program": "${userHome}/.config/itch/apps/dreambox/dreambox",
-            "args": [ "--wasm-debug", "-f", "${workspaceFolder}/build/debug.iso" ],
+            "program": "${userHome}/.config/itch/apps/dreambox/DreamboxVM",
+            "args": [ "--wasm-debug", "--skip-bios", "--startcd", "${workspaceFolder}/build/debug.iso" ],
             "cwd": "${userHome}/.config/itch/apps/dreambox/",
         }
     ]

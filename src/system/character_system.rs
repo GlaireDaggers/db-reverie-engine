@@ -63,10 +63,11 @@ pub fn character_apply_input_update(time: &TimeData, map_data: &MapData, world: 
         let wish_dir = Vector3::new(input.input_move_dir.x, input.input_move_dir.y, 0.0);
         let accel = if state.grounded { MAX_ACCEL } else { AIR_ACCEL };
         
-        if wish_dir.length_sq() > 0.0 {
+        if wish_dir.length_sq() > 0.1 {
+            let wish_speed = cc.move_speed * wish_dir.length();
             let wish_dir = wish_dir.normalized();
             let current_speed = Vector3::dot(&wish_dir, &state.velocity);
-            let add_speed = (cc.move_speed - current_speed).clamp(0.0, accel * cc.move_speed * time.delta_time);
+            let add_speed = (wish_speed - current_speed).clamp(0.0, accel * cc.move_speed * time.delta_time);
             
             state.velocity = state.velocity + (wish_dir * add_speed);
         }
@@ -124,12 +125,9 @@ pub fn character_update(time: &TimeData, map_data: &MapData, world: &mut World) 
         collider_bounds.push((*ent, center, extents));
     }
     for (ent, (cbounds, transform)) in &colliders {
-        let mut local2world = Matrix4x4::identity();
-        Matrix4x4::load_identity_simd();
-        Matrix4x4::mul_simd(&Matrix4x4::scale(transform.scale));
-        Matrix4x4::mul_simd(&Matrix4x4::rotation(transform.rotation));
-        Matrix4x4::mul_simd(&Matrix4x4::translation(transform.position));
-        Matrix4x4::store_simd(&mut local2world);
+        let local2world = Matrix4x4::scale(transform.scale)
+            * Matrix4x4::rotation(transform.rotation)
+            * Matrix4x4::translation(transform.position);
 
         let (center, extents) = transform_aabb(cbounds.bounds_offset, cbounds.bounds_extents, &local2world);
         collider_bounds.push((*ent, center, extents));
@@ -143,15 +141,12 @@ pub fn character_update(time: &TimeData, map_data: &MapData, world: &mut World) 
 
             for (e, (mapmodel, transform)) in &mapmodels {
                 // transform trace start + end into model's local space
-                let mut world2local = Matrix4x4::identity();
                 let mut inv_r = transform.rotation; inv_r.invert();
                 let inv_scale = 1.0 / transform.scale;
 
-                Matrix4x4::load_identity_simd();
-                Matrix4x4::mul_simd(&Matrix4x4::translation(transform.position * -1.0));
-                Matrix4x4::mul_simd(&Matrix4x4::rotation(inv_r));
-                Matrix4x4::mul_simd(&Matrix4x4::scale(inv_scale));
-                Matrix4x4::store_simd(&mut world2local);
+                let world2local = Matrix4x4::translation(transform.position * -1.0)
+                    * Matrix4x4::rotation(inv_r)
+                    * Matrix4x4::scale(inv_scale);
 
                 let local_start = world2local * Vector4::new(start.x, start.y, start.z, 1.0);
                 let local_end = world2local * Vector4::new(end.x, end.y, end.z, 1.0);
@@ -164,12 +159,9 @@ pub fn character_update(time: &TimeData, map_data: &MapData, world: &mut World) 
                 if tr.fraction < trace.fraction {
                     // transform trace results back into world space
 
-                    let mut local2world = Matrix4x4::identity();
-                    Matrix4x4::load_identity_simd();
-                    Matrix4x4::mul_simd(&Matrix4x4::scale(transform.scale));
-                    Matrix4x4::mul_simd(&Matrix4x4::rotation(transform.rotation));
-                    Matrix4x4::mul_simd(&Matrix4x4::translation(transform.position));
-                    Matrix4x4::store_simd(&mut local2world);
+                    let local2world = Matrix4x4::scale(transform.scale)
+                        * Matrix4x4::rotation(transform.rotation)
+                        * Matrix4x4::translation(transform.position);
 
                     let trace_end = local2world * Vector4::new(tr.end_pos.x, tr.end_pos.y, tr.end_pos.z, 1.0);
                     let trace_normal = local2world * Vector4::new(tr.hit_normal.x, tr.hit_normal.y, tr.hit_normal.z, 0.0);

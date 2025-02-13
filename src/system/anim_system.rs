@@ -51,19 +51,14 @@ fn sample_anim_node(node: &DBSkelNode, anim: &DBAnimationClip, time: f32, loopmo
     let object_to_bone = node.inv_bind_pose;
 
     // compute bone to object
-    let mut bone_to_object = Matrix4x4::identity();
-    Matrix4x4::load_simd(&Matrix4x4::scale(local_scale));
-    Matrix4x4::mul_simd(&Matrix4x4::rotation(local_rot));
-    Matrix4x4::mul_simd(&Matrix4x4::translation(local_pos));
-    Matrix4x4::mul_simd(&node.local_rest_pose);
-    Matrix4x4::mul_simd(&parent_mat);
-    Matrix4x4::store_simd(&mut bone_to_object);
+    let bone_to_object = Matrix4x4::scale(local_scale)
+        * Matrix4x4::rotation(local_rot)
+        * Matrix4x4::translation(local_pos)
+        * node.local_rest_pose
+        * parent_mat;
 
     // compute skinning matrix
-    let mut skin_mat = Matrix4x4::identity();
-    Matrix4x4::load_simd(&object_to_bone);
-    Matrix4x4::mul_simd(&bone_to_object);
-    Matrix4x4::store_simd(&mut skin_mat);
+    let skin_mat = object_to_bone * bone_to_object;
 
     // write result to bone matrix palette
     bonepalette[node.bone_index as usize] = skin_mat;

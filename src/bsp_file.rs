@@ -1,10 +1,8 @@
 use std::{collections::HashMap, io::Seek};
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use dbsdk_rs::{math::Vector3, vdp::Color32};
+use dbsdk_rs::{db::log, logfmt, math::Vector3, vdp::Color32};
 use regex::Regex;
-
-use crate::println;
 
 const BSP_MAGIC: u32 = 0x50534249;
 const BSP_VERSION: u32 = 38;
@@ -377,7 +375,7 @@ impl NodeLump {
         let num_nodes = (info.length / 28) as usize;
         let mut nodes: Vec<Node> = Vec::with_capacity(num_nodes);
 
-        println!("Num nodes in node lump: {}", num_nodes);
+        logfmt!("Num nodes in node lump: {}", num_nodes);
 
         for _ in 0..num_nodes {
             let plane = reader.read_u32::<LittleEndian>().unwrap();
@@ -412,7 +410,7 @@ impl LeafLump {
         let num_leaves = (info.length / 28) as usize;
         let mut leaves: Vec<Leaf> = Vec::with_capacity(num_leaves);
 
-        println!("Num leaves in leaf lump: {}", num_leaves);
+        logfmt!("Num leaves in leaf lump: {}", num_leaves);
 
         for _ in 0..num_leaves {
             let brush_or = reader.read_u32::<LittleEndian>().unwrap();
@@ -487,7 +485,7 @@ impl TexInfoLump {
         let num_textures = (info.length / 76) as usize;
         let mut textures: Vec<TexInfo> = Vec::with_capacity(num_textures);
 
-        println!("Num textures in tex info lump: {}", num_textures);
+        logfmt!("Num textures in tex info lump: {}", num_textures);
 
         for _ in 0..num_textures {
             let u_axis = read_vec3f(reader);
@@ -540,7 +538,7 @@ impl VisLump {
 
         let mut clusters: Vec<VisCluster> = Vec::with_capacity(num_clusters);
 
-        println!("Num clusters in vis lump: {}", num_clusters);
+        logfmt!("Num clusters in vis lump: {}", num_clusters);
 
         for _ in 0..num_clusters {
             let pvs = reader.read_u32::<LittleEndian>().unwrap();

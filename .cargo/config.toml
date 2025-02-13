@@ -4,4 +4,5 @@ rustflags = [
     "-g",
     "-C", "link-arg=--max-memory=16777216",
     "-C", "link-arg=--export-table",
+    "-C", "target-feature=+bulk-memory,+simd128"
 ]

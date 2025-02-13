@@ -316,12 +316,7 @@ impl DBMesh {
                     let rotate = Matrix4x4::rotation(Quaternion::new(rx, ry, rz, rw));
                     let scale = Matrix4x4::scale(Vector3::new(sx, sy, sz));
 
-                    Matrix4x4::load_simd(&scale);
-                    Matrix4x4::mul_simd(&rotate);
-                    Matrix4x4::mul_simd(&translate);
-
-                    let mut transform = Matrix4x4::identity();
-                    Matrix4x4::store_simd(&mut transform);
+                    let transform = scale * rotate * translate;
 
                     // material info
                     let mut mat_name: [u8;32] = [0;32];

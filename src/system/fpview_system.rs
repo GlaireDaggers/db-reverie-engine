@@ -8,8 +8,13 @@ const CROUCH_SPEED: f32 = 120.0;
 /// System which allows player to control yaw/pitch of FPView
 pub fn fpview_input_system_update(input: &InputState, time: &TimeData, world: &mut World) {
     for (_, (fpview, _)) in world.query_mut::<(&mut FPView, &PlayerInput)>() {
-        fpview.yaw -= input.look_x * LOOK_SPEED * time.delta_time;
-        fpview.pitch += input.look_y * LOOK_SPEED * time.delta_time;
+        if input.look_x.abs() >= 0.1 {
+            fpview.yaw -= ((input.look_x - 0.1) * 1.1111) * LOOK_SPEED * time.delta_time;
+        }
+
+        if input.look_y.abs() >= 0.1 {
+            fpview.pitch += ((input.look_y - 0.1) * 1.1111) * LOOK_SPEED * time.delta_time;
+        }
 
         if fpview.yaw < 0.0 {
             fpview.yaw += 360.0;
