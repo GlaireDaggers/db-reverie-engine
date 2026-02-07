@@ -19,3 +19,6 @@ regex = "1.11.1"
 [profile.dev]
 opt-level = 0
 debug = true
+
+[profile.release]
+opt-level = 3

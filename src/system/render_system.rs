@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dbsdk_rs::{math::{Matrix4x4, Quaternion, Vector2, Vector3, Vector4}, vdp::{self, Color32, PackedVertex, Rectangle, Texture, TextureUnit, VertexSlotFormat}, vu_asm::vu_asm};
 use hecs::World;
 
-use crate::{bsp_file::{BspFile, MASK_SOLID}, bsp_renderer::{self, MapVertex}, common::{self, aabb_frustum, coord_space_transform, extract_frustum, transform_aabb}, component::{camera::Camera, light::Light, mapmodel::MapModel, mesh::{Mesh, SkeletalPoseState}, transform3d::Transform3D}, dbmesh::DBMeshPart, sh::SphericalHarmonics, MapData, TimeData};
+use crate::{MapData, TimeData, bsp_file::{BspFile, MASK_SOLID}, bsp_renderer::{self, MapVertex}, common::{self, aabb_frustum, coord_space_transform, extract_frustum, transform_aabb}, component::{camera::Camera, light::Light, mapmodel::MapModel, mesh::{FPMesh, Mesh, SkeletalPoseState}, transform3d::Transform3D}, dbmesh::DBMeshPart, sh::SphericalHarmonics};
 
 // VU program which multiplies input vertex positions against a transform matrix, and input normals against a lighting matrix
 const VU_TRANSFORM_AND_LIGHT: &[u32] = &vu_asm!{
@@ -318,6 +318,12 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
         .iter()
         .collect::<Vec<_>>();
 
+    // gather first-person meshes
+    let mut fp_mesh_iter = world.query::<(&FPMesh, &Transform3D)>();
+    let fp_meshes = fp_mesh_iter
+        .iter()
+        .collect::<Vec<_>>();
+
     // gather lights
     let mut light_iter = world.query::<(&Transform3D, &Light)>();
     let lights = light_iter
@@ -494,6 +500,31 @@ pub fn render_system(time: &TimeData, map_data: &mut MapData, env_data: &Option<
         // draw models (transparent)
         for (transform, id) in &visible_models {
             map_data.map_models.draw_model_transparent(&map_data.map, time.total_time, &map_data.map_textures, *id, transform, &cam_view, &cam_proj);
+        }
+
+        // setup VU for drawing lit meshes
+        setup_vu_lit_mesh();
+
+        // clear depth
+        vdp::clear_depth(1.0);
+
+        // calculate lighting for first-person meshes
+        let mut fplight = SphericalHarmonics::new();
+        fplight.add_ambient_light(Vector3::new(0.25, 0.1, 0.0));
+        gather_lighting(&mut fplight, &transform.position, &light_data, &map_data.map);
+
+        // draw FP meshes
+        for (_, (mesh, mesh_transform)) in &fp_meshes {
+            let local2world = Matrix4x4::scale(mesh_transform.scale)
+                * Matrix4x4::rotation(mesh_transform.rotation)
+                * Matrix4x4::translation(mesh_transform.position);
+
+            let normal2world = Matrix4x4::rotation(mesh_transform.rotation) * Matrix4x4::rotation(transform.rotation);
+            let mvp = local2world * coord_space_transform() * cam_proj;
+
+            for part in &mesh.mesh.mesh_parts {
+                draw_static_meshpart(&mut vtx_buffer, part, &mvp, &normal2world, &fplight);
+            }
         }
 
         camera_index += 1;

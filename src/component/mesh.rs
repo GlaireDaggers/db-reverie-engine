@@ -10,6 +10,10 @@ pub struct Mesh {
     pub bounds_extents: Vector3,
 }
 
+pub struct FPMesh {
+    pub mesh: Arc<DBMesh>,
+}
+
 pub struct MeshAnim {
     pub anim: Arc<DBAnimationClip>,
     pub loop_mode: AnimationCurveLoopMode,

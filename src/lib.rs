@@ -21,6 +21,8 @@ use dbsdk_rs::{db::{self, log}, gamepad::{self, Gamepad}, io::{FileMode, FileStr
 use music_player::MusicPlayer;
 use system::{anim_system::sk_anim_system_update, character_system::{character_apply_input_update, character_init, character_input_update, character_rotation_update, character_update}, door_system::door_system_update, flycam_system::flycam_system_update, fpcam_system::fpcam_update, fpview_system::{fpview_eye_update, fpview_input_system_update}, render_system::render_system, rotator_system::rotator_system_update, triggerable_system::trigger_link_system_update};
 
+use crate::component::mesh::FPMesh;
+
 pub mod common;
 pub mod dbanim;
 pub mod dbmesh;
@@ -313,7 +315,7 @@ impl GameState {
             CharacterController::default(),
             PlayerInput::new(),
             DoorOpener {},
-            Light { max_radius: 200.0, color: Vector3::new(1.0, 1.0, 1.0) }
+            // Light { max_radius: 200.0, color: Vector3::new(1.0, 1.0, 1.0) }
         ));
 
         world.spawn((
@@ -335,7 +337,15 @@ impl GameState {
             ColliderBounds { bounds_offset: Vector3::new(0.0, 0.5, 0.0), bounds_extents: Vector3::new(1.0, 2.0, 1.0) }
         ));
 
-        let music_player = MusicPlayer::new("/cd/content/mus/b8d_toys.qoa", false).unwrap();
+        // test mesh 2
+        world.spawn((
+            Transform3D::default().with_scale(Vector3::new(5.0, 5.0, 5.0)).with_position(Vector3::new(10.0, 20.0, -10.0)),
+            FPMesh {
+                mesh: load_mesh("/cd/content/model/wpn/pistol/pistol.dbm").unwrap(),
+            }
+        ));
+
+        // let music_player = MusicPlayer::new("/cd/content/mus/b8d_toys.qoa", false).unwrap();
 
         GameState {
             gamepad: Gamepad::new(gamepad::GamepadSlot::SlotA),
@@ -343,7 +353,7 @@ impl GameState {
             time_data: TimeData::default(),
             map_data: Some(map_data),
             env: Some(env),
-            music_player: Some(music_player),
+            music_player: None, //Some(music_player),
         }
     }
 
